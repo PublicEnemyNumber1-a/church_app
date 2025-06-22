@@ -1,0 +1,3703 @@
+#best one
+# make a scrap to get lyrics of URLs and create a slide
+import sys
+import json
+import cv2
+import math
+import pdfplumber
+from pathlib import Path
+import glob
+import time
+import os
+import re
+from extrac_URLS_V2 import * # works exactly like pdf extrator nearly 1500~ lines also has cloud resource using scrap auto
+from PyQt5.QtWidgets import *
+from PyQt5.QtCore import *
+from PyQt5.QtGui import *
+from PyQt5.QtWebEngineWidgets import QWebEngineView
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.preprocessing import LabelEncoder
+import spacy
+from cryptography.fernet import Fernet
+# Hard-coded encryption key (for development purposes only)
+# Generate a key using: key = Fernet.generate_key()
+# Example key: b'YOUR_GENERATED_KEY_HERE'
+ENCRYPTION_KEY = b'hqHfYjsOe_OIhAhhgNNZxoaRGqA3pywvM1QCfbTeQg0='  # Replace with your actual key
+
+
+class TrainingProgressDialog(QDialog):
+    def __init__(self, total_epochs):
+
+        super().__init__()
+        self.setWindowTitle("Training Progress")
+        self.setFixedSize(500, 280)
+        self.setWindowIcon(QIcon(resource_path("CAS.ico")))
+        self.total_epochs = total_epochs
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+
+        container = QWidget()
+        container.setStyleSheet("""
+            QWidget {
+                background-color: #0d1117;
+                border: 2px solid #30363d;
+                border-radius: 12px;
+            }
+        """)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        self.title = QLabel("NEURAL NETWORK TRAINING")
+        self.title.setAlignment(Qt.AlignCenter)
+        self.title.setStyleSheet("""
+            QLabel {
+                color: #00d4aa;
+                font-size: 18px;
+                font-weight: bold;
+                font-family: 'Segoe UI';
+            }
+        """)
+        layout.addWidget(self.title)
+
+        self.status = QLabel(f"Initializing... 0/{total_epochs} epochs")
+        self.status.setAlignment(Qt.AlignCenter)
+        self.status.setStyleSheet("""
+            QLabel {
+                color: #e6edf3;
+                font-size: 12px;
+                font-family: 'Segoe UI';
+            }
+        """)
+        layout.addWidget(self.status)
+
+        self.progress = QProgressBar()
+        self.progress.setMaximum(total_epochs)
+        self.progress.setTextVisible(False)
+        self.progress.setStyleSheet("""
+            QProgressBar {
+                background-color: #21262d;
+                border: 2px solid #30363d;
+                border-radius: 10px;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #00d4aa, stop:0.5 #238636, stop:1 #00d4aa);
+                border-radius: 10px;
+            }
+        """)
+        layout.addWidget(self.progress)
+
+        self.percentage = QLabel("0%")
+        self.percentage.setAlignment(Qt.AlignCenter)
+        self.percentage.setStyleSheet("""
+            QLabel {
+                color: #00d4aa;
+                font-size: 16px;
+                font-family: 'Segoe UI';
+            }
+        """)
+        layout.addWidget(self.percentage)
+
+        self.activity = QLabel("● ● ● PROCESSING ● ● ●")
+        self.activity.setAlignment(Qt.AlignCenter)
+        self.activity.setStyleSheet("""
+            QLabel {
+                color: #ff8000;
+                font-size: 12px;
+                font-family: 'Segoe UI';
+            }
+        """)
+        layout.addWidget(self.activity)
+
+        main_layout.addWidget(container)
+
+        self.setLayout(main_layout)
+
+        self.anim_timer = QTimer()
+        self.anim_timer.timeout.connect(self.animate_activity)
+        self.anim_timer.start(400)
+        self.anim_index = 0
+
+    def animate_activity(self):
+        anim_states = [
+            "○ ● ● PROCESSING ● ● ○",
+            "○ ○ ● PROCESSING ● ○ ○",
+            "○ ○ ○ PROCESSING ○ ○ ○",
+            "● ○ ○ PROCESSING ○ ○ ●",
+            "● ● ○ PROCESSING ○ ● ●",
+            "● ● ● PROCESSING ● ● ●",
+        ]
+        self.activity.setText(anim_states[self.anim_index % len(anim_states)])
+        self.anim_index += 1
+
+    def update_progress(self, epoch):
+        self.progress.setValue(epoch)
+        percent = int((epoch / self.total_epochs) * 100)
+        self.percentage.setText(f"{percent}%")
+        self.status.setText(f"Training... {epoch}/{self.total_epochs} epochs")
+        QApplication.processEvents()
+        if percent >= 100:
+            self.activity.setText("✓✓✓ TRAINING COMPLETE ✓✓✓")
+            self.activity.setStyleSheet("""
+                QLabel {
+                    color: #00ff44;
+                    font-size: 12px;
+                    font-family: 'Segoe UI';
+                }
+            """)
+            self.anim_timer.stop()
+
+
+
+class NeuralNetwork(nn.Module):
+    def __init__(self, input_size, hidden_sizes, output_size, dropout_rate=0.2):
+        super(NeuralNetwork, self).__init__()
+        layers = []
+        prev_size = input_size
+        for hidden_size in hidden_sizes:
+            layers.append(nn.Linear(prev_size, hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_rate))
+            prev_size = hidden_size
+        layers.append(nn.Linear(prev_size, output_size))
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.model(x)
+
+# Dentro da classe EditorWindow:
+
+
+def resource_path(relative_path):
+    """Get path to resource inside .exe or script."""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
+
+
+
+# Encrypt data
+def encrypt_data(data):
+    fernet = Fernet(ENCRYPTION_KEY)
+    encrypted_data = fernet.encrypt(data.encode())
+    return encrypted_data
+
+# Decrypt data
+def decrypt_data(encrypted_data):
+    fernet = Fernet(ENCRYPTION_KEY)
+    decrypted_data = fernet.decrypt(encrypted_data).decode()
+    return decrypted_data
+
+class CustomTitleBar(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(50)  # Reduced height since text is smaller
+        self.parent = parent
+        self.setStyleSheet("""
+            background-color: #ffffff;
+            border-bottom: 1px solid #e5e7eb;
+        """)
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(25, 0, 25, 0)
+        self.layout.setSpacing(12)
+        #self.setWindowIcon(QIcon(resource_path("CAS.ico")))
+        
+        # Window Title Label - Fixed font size
+        self.title_label = QLabel("CAS")
+        self.title_label.setStyleSheet("""
+            QLabel {
+                color: #ffffff ;
+                background-color: transparent;
+                font-weight: 700;
+                font-size: 16px;
+                font-family: 'Segoe UI', 'Arial', sans-serif;
+            }
+        """)
+        self.title_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        self.layout.addWidget(self.title_label)
+        self.layout.addStretch()
+        
+        # Minimize Button
+        self.minimize_button = QPushButton("—")
+        self.minimize_button.setFixedSize(45, 28)
+        self.minimize_button.setStyleSheet(self.button_style())
+        self.minimize_button.setToolTip("Minimize")
+        self.minimize_button.clicked.connect(self.on_minimize)
+        self.layout.addWidget(self.minimize_button)
+        
+        # Maximize Button
+        self.maximize_button = QPushButton("▢")
+        self.maximize_button.setFixedSize(45, 28)
+        self.maximize_button.setStyleSheet(self.button_style())
+        self.maximize_button.setToolTip("Maximize")
+        self.maximize_button.clicked.connect(self.on_maximize)
+        self.layout.addWidget(self.maximize_button)
+        
+        # Close Button
+        self.close_button = QPushButton("×")
+        self.close_button.setFixedSize(45, 28)
+        self.close_button.setStyleSheet(self.close_button_style())
+        self.close_button.setToolTip("Close")
+        self.close_button.clicked.connect(self.on_close)
+        self.layout.addWidget(self.close_button)
+        
+        self.start = QPoint(0, 0)
+        self.pressing = False
+
+    def button_style(self):
+        return """
+            QPushButton {
+                color: #374151;
+                background-color: transparent;
+                border: none;
+                font-weight: 600;
+                font-size: 24px;
+            }
+            QPushButton:hover {
+                background-color: #e0e7ff;
+                color: #2563eb;
+                border-radius: 6px;
+            }
+            QPushButton:pressed {
+                background-color: #c7d2fe;
+                color: #1e40af;
+            }
+        """
+
+    def close_button_style(self):
+        return """
+            QPushButton {
+                color: #6b7280;
+                background-color: transparent;
+                border: none;
+                font-weight: 600;
+                font-size: 24px;
+            }
+            QPushButton:hover {
+                background-color: #fee2e2;
+                color: #dc2626;
+                border-radius: 6px;
+            }
+            QPushButton:pressed {
+                background-color: #fecaca;
+                color: #b91c1c;
+            }
+        """
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.start = event.globalPos()
+            self.pressing = True
+
+    def mouseMoveEvent(self, event):
+        if self.pressing:
+            delta = event.globalPos() - self.start
+            self.parent.move(self.parent.pos() + delta)
+            self.start = event.globalPos()
+
+    def mouseReleaseEvent(self, event):
+        self.pressing = False
+
+    def on_minimize(self):
+        self.parent.showMinimized()
+
+    def on_maximize(self):
+        if self.parent.isMaximized():
+            self.parent.showNormal()
+        else:
+            self.parent.showMaximized()
+
+    def on_close(self):
+        QApplication.instance().quit()
+
+class Slide:
+    def __init__(self):
+        self.text = ""
+        self.font_family = "Arial"
+        self.font_size = 30
+        self.font_color = "#FFFFFF"
+        self.background_image = ""
+        self.video_path = ""  # Add this line to define the video_path attribute
+        self.text_alignment = Qt.AlignCenter
+        self.text_x = 0.5  # Relative position (0-1)
+        self.text_y = 0.5  # Relative position (0-1)
+        self.video_url = ""  # novo campo pra URL
+        self.typing_speed = 0
+
+
+class ResolutionDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Set Display Resolution")
+        self.setGeometry(200, 200, 300, 150)
+        self.setWindowIcon(QIcon(resource_path("CAS.ico")))
+
+        layout = QVBoxLayout(self)
+
+        self.width_input = QSpinBox(self)
+        self.width_input.setRange(100, 5000)  # Set a reasonable range for width
+        self.width_input.setValue(600)  # Default width
+
+        self.height_input = QSpinBox(self)
+        self.height_input.setRange(100, 5000)  # Set a reasonable range for height
+        self.height_input.setValue(600)  # Default height
+
+        layout.addWidget(QLabel("Width:"))
+        layout.addWidget(self.width_input)
+        layout.addWidget(QLabel("Height:"))
+        layout.addWidget(self.height_input)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def get_resolution(self):
+        return self.width_input.value(), self.height_input.value()
+
+
+class SlideGroup:
+    def __init__(self, name="New Group"):
+        self.name = name
+        self.slides = [Slide()]
+
+class VideoThread(QThread):
+    frame_ready = pyqtSignal(object)
+    
+    def __init__(self, video_path):
+        super().__init__()
+        self.video_path = video_path
+        self.cap = None
+        self.running = False
+        
+    def run(self):
+        self.cap = cv2.VideoCapture(self.video_path)
+        self.running = True
+        
+        while self.running and self.cap.isOpened():
+            ret, frame = self.cap.read()
+            if ret:
+                self.frame_ready.emit(frame)
+                self.msleep(33)  # ~30 FPS
+            else:
+                # Loop video
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    
+    def stop(self):
+        self.running = False
+        if self.cap:
+            self.cap.release()
+        self.wait()
+
+class DisplayWindow(QWidget):
+    def __init__(self, parent=None, typing_speed_ms=0):
+        super().__init__()
+        self.EditorWindow = parent
+        self.typing_speed = typing_speed_ms
+
+        self.setWindowTitle("LED Panel Display")
+        self.setGeometry(100, 100, 600, 600)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setWindowIcon(QIcon(resource_path("CAS.ico")))
+        self.old_pos = None
+        self.text_dragging = False
+        self.drag_start_pos = None
+        self.current_slide = None
+        self.current_video_path = None
+
+        # Initialize typewriter timer and variables
+        self.typewriter_timer = QTimer()
+        self.typewriter_timer.setSingleShot(False)
+        self.typewriter_index = 0
+        self.typewriter_text = ""
+
+        self.setStyleSheet("""
+            QWidget {
+                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2563eb, stop:1 #9333ea);
+                color: #00ffff;
+                font-family: 'Segoe UI', Arial;
+            }
+        """)
+
+        self.display_label = QLabel(self)
+        self.display_label.setAlignment(Qt.AlignCenter)
+        self.display_label.setWordWrap(False)
+        self.display_label.setStyleSheet("color: white; padding: 20px; background: rgba(0, 0, 0, 0.3); border-radius: 10px;")
+        self.display_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
+
+        self.web_view = QWebEngineView(self)
+        self.web_view.setVisible(False)
+        self.web_view.setGeometry(0, 0, self.width(), self.height())
+
+    def set_typing_speed(self, ms):
+        """Set the typing speed"""
+        self.typing_speed = max(0, int(ms))  # Ensure non-negative integer
+        print(f"Typing speed set to: {self.typing_speed} ms")
+
+    def start_typewriter_effect(self, text):
+        """Start typewriter effect with proper handling of all speed values"""
+        print(f"Starting typewriter effect with speed: {self.typing_speed} ms")
+        
+        # Stop any existing timer
+        if self.typewriter_timer.isActive():
+            self.typewriter_timer.stop()
+        
+        # Disconnect any existing connections
+        try:
+            self.typewriter_timer.timeout.disconnect()
+        except TypeError:
+            pass
+
+        # Prepare text and reset index
+        self.typewriter_text = self.insert_line_breaks(text, 100)
+        self.typewriter_index = 0
+        self.display_label.setText("")
+        
+        print(f"Text length: {len(self.typewriter_text)}")
+
+        # Handle different typing speeds
+        if self.typing_speed == 0:
+            # Show all text immediately
+            print("Showing all text immediately (speed = 0)")
+            self.display_label.setText(self.typewriter_text)
+        else:
+            # Use typewriter effect with timer
+            print(f"Starting timer with interval: {self.typing_speed} ms")
+            self.typewriter_timer.timeout.connect(self.update_typewriter_text)
+            self.typewriter_timer.start(self.typing_speed)
+
+    def insert_line_breaks(self, text, max_length):
+        """Insert line breaks for long text"""
+        if not text:
+            return ""
+            
+        lines = text.split('\n')
+        processed_lines = []
+        for line in lines:
+            while len(line) > max_length:
+                processed_lines.append(line[:max_length])
+                line = line[max_length:]
+            processed_lines.append(line)
+        return '\n'.join(processed_lines)
+
+    def update_typewriter_text(self):
+        """Update typewriter text character by character"""
+        if self.typewriter_index < len(self.typewriter_text):
+            current_text = self.typewriter_text[:self.typewriter_index + 1]
+            self.display_label.setText(current_text)
+            self.typewriter_index += 1
+            
+            # Debug output every 10 characters
+            if self.typewriter_index % 10 == 0:
+                pass
+        else:
+            # Animation complete
+            print("Typewriter effect completed")
+            self.typewriter_timer.stop()
+
+    def display_slide(self, slide):
+        """Display a slide with proper typing speed handling"""
+        if self.current_slide and self.current_slide.text == slide.text \
+        and self.current_slide.background_image == slide.background_image \
+        and self.current_slide.video_path == slide.video_path \
+        and self.current_slide.video_url == slide.video_url:
+            return
+
+
+        # Update typing speed from slide
+        if hasattr(slide, 'typing_speed'):
+            self.set_typing_speed(slide.typing_speed)
+        
+        #print(f"Displaying slide with typing speed: {self.typing_speed}")
+        
+        self.current_slide = slide
+        self.stop_video()
+        self.stop_video_url()
+
+        # Handle background - video, image, or gradient
+        if slide.video_path and os.path.exists(slide.video_path):
+            self.play_video(slide.video_path)
+        elif slide.background_image and os.path.exists(slide.background_image):
+            pixmap = QPixmap(slide.background_image)
+            if not pixmap.isNull():
+                scaled_pixmap = pixmap.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                palette = QPalette()
+                palette.setBrush(QPalette.Window, QBrush(scaled_pixmap))
+                self.setPalette(palette)
+                self.setAutoFillBackground(True)
+        elif slide.video_url:
+            self.play_video_url(slide.video_url)
+        else:
+            self.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2563eb, stop:1 #9333ea);")
+            self.setAutoFillBackground(False)
+
+
+            # Check if the slide is blank (no text, no data)
+            if not slide.text and not slide.background_image and not slide.video_path and not slide.video_url:
+                # Create a QLabel to display "CAS" if it doesn't already exist
+                if not hasattr(self, 'cas_label'):
+                    self.cas_label = QLabel("CAS", self)
+                    self.cas_label.setStyleSheet("color: white; font-size: 80px; font-weight: bold;")
+                    self.cas_label.setAlignment(Qt.AlignCenter)
+                    self.cas_label.setGeometry(0, 0, self.width(), self.height())  # Set initial geometry
+                self.cas_label.show()
+                self.cas_label.setGeometry(0, 0, self.width(), self.height())  # Update geometry just in case
+            else:
+                if hasattr(self, 'cas_label'):
+                    self.cas_label.hide()
+
+
+        # Set font properties
+        font = QFont(slide.font_family, slide.font_size)
+        font.setBold(True)
+        self.display_label.setFont(font)
+        self.display_label.setStyleSheet(f"""
+            color: {slide.font_color};
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.0);
+            border-radius: 10px;
+        """)
+
+        # Calculate text position
+        self.display_label.setText(slide.text)
+        self.display_label.adjustSize()
+
+        available_width = max(0, self.width() - self.display_label.width())
+        available_height = max(0, self.height() - self.display_label.height())
+        x = int(available_width * slide.text_x)
+        y = int(available_height * slide.text_y)
+        self.display_label.move(x, y)
+
+        # Clear text and show with typewriter effect
+        self.display_label.setText("")
+        self.display_label.show()
+        
+        # Start typewriter effect
+        if slide.text:
+            self.start_typewriter_effect(slide.text)
+
+    def play_video(self, video_path):
+        """Play local video file"""
+        self.stop_video()
+        self.current_video_path = video_path
+
+        if not hasattr(self, 'video_label'):
+            self.video_label = QLabel(self)
+            self.video_label.setScaledContents(True)
+            self.video_label.lower()
+
+        self.video_thread = VideoThread(video_path)
+        self.video_thread.frame_ready.connect(self.update_video_frame)
+        self.video_thread.start()
+
+        self.video_label.setGeometry(0, 0, self.width(), self.height())
+        self.video_label.show()
+
+    def play_current_video(self):
+        """Replay current video"""
+        if self.current_video_path:
+            self.play_video(self.current_video_path)
+
+    def update_video_frame(self, frame):
+        """Update video frame display"""
+        try:
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb_frame.shape
+            bytes_per_line = ch * w
+            qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(qt_image)
+            scaled_pixmap = pixmap.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+
+            self.video_label.setPixmap(scaled_pixmap)
+
+            label_x = (self.width() - scaled_pixmap.width()) // 2
+            label_y = (self.height() - scaled_pixmap.height()) // 2
+            self.video_label.setGeometry(label_x, label_y, scaled_pixmap.width(), scaled_pixmap.height())
+        except Exception as e:
+            print(f"Error updating video frame: {e}")
+
+    def stop_video(self):
+        """Stop local video playback"""
+        if hasattr(self, 'video_thread') and self.video_thread:
+            self.video_thread.stop()
+            self.video_thread = None
+        if hasattr(self, 'video_label'):
+            self.video_label.clear()
+            self.video_label.hide()
+
+    def play_video_url(self, url):
+        """Play video from URL using web view"""
+        self.stop_video()
+        self.web_view.setUrl(QUrl(url))
+        self.web_view.setVisible(True)
+        self.web_view.raise_()
+        self.web_view.setGeometry(0, 0, self.width(), self.height())
+
+    def stop_video_url(self):
+        """Stop URL video playback"""
+        self.web_view.setVisible(False)
+        self.web_view.setUrl(QUrl("about:blank"))
+
+    def resizeEvent(self, event):
+        """Handle window resize"""
+        super().resizeEvent(event)
+        if hasattr(self, 'web_view'):
+            self.web_view.setGeometry(0, 0, self.width(), self.height())
+        if self.current_slide:
+            self.display_slide(self.current_slide)
+        if hasattr(self, 'cas_label'):
+            self.cas_label.setGeometry(0, 0, self.width(), self.height())
+
+    def keyPressEvent(self, event):
+        """Handle keyboard input"""
+        if event.key() in (Qt.Key_Left, Qt.Key_Up):
+            if self.EditorWindow:
+                self.EditorWindow.previous_slide()
+        elif event.key() in (Qt.Key_Right, Qt.Key_Down):
+            if self.EditorWindow:
+                self.EditorWindow.next_slide()
+        elif event.key() == Qt.Key_Escape and self.isFullScreen():
+            self.hide()
+        elif event.key() == Qt.Key_F11:
+            if self.isFullScreen():
+                self.hide()
+            else:
+                self.showFullScreen()
+        elif event.key() == Qt.Key_Escape:
+            self.hide()
+        else:
+            super().keyPressEvent(event)
+
+    def mousePressEvent(self, event):
+        """Handle mouse press for dragging"""
+        if event.button() == Qt.LeftButton:
+            if self.display_label.geometry().contains(event.pos()):
+                self.text_dragging = True
+                self.drag_start_pos = event.pos()
+                self.setCursor(Qt.ClosedHandCursor)
+            else:
+                self.old_pos = event.globalPos()
+
+    def mouseMoveEvent(self, event):
+        """Handle mouse movement for dragging"""
+        if self.text_dragging and self.current_slide:
+            # Drag text
+            delta = event.pos() - self.drag_start_pos
+            current_rect = self.display_label.geometry()
+            new_x = max(0, min(self.width() - current_rect.width(), current_rect.x() + delta.x()))
+            new_y = max(0, min(self.height() - current_rect.height(), current_rect.y() + delta.y()))
+
+            # Update slide position
+            self.current_slide.text_x = new_x / (self.width() - current_rect.width()) if self.width() > current_rect.width() else 0.5
+            self.current_slide.text_y = new_y / (self.height() - current_rect.height()) if self.height() > current_rect.height() else 0.5
+
+            self.display_label.move(new_x, new_y)
+            self.drag_start_pos = event.pos()
+        elif event.buttons() == Qt.LeftButton and self.old_pos and not self.text_dragging:
+            # Drag window
+            delta = QPoint(event.globalPos() - self.old_pos)
+            self.move(self.x() + delta.x(), self.y() + delta.y())
+            self.old_pos = event.globalPos()
+
+    def mouseReleaseEvent(self, event):
+        """Handle mouse release"""
+        if event.button() == Qt.LeftButton:
+            self.text_dragging = False
+            self.setCursor(Qt.ArrowCursor)
+            
+    def closeEvent(self, event):
+        """Handle window close"""
+        self.stop_video()
+        self.stop_video_url()
+        if self.typewriter_timer.isActive():
+            self.typewriter_timer.stop()
+        super().closeEvent(event)
+
+
+
+class EditorWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowIcon(QIcon(resource_path("CAS.ico")))
+        self.slide_groups = [SlideGroup("Main Presentation")]
+        self.current_group_index = 0
+        self.current_slide_index = 0
+        self.display_window = DisplayWindow(self)
+
+        self.project_file = ""
+        
+        # Initialize UI components that are referenced during setup
+        self.slide_counter = QLabel("Slide 1 of 1")
+        self.current_video_path = None
+        self.setFocusPolicy(Qt.StrongFocus)  # Allow the window to receive key events
+
+        self.init_ui()
+        self.set_scaled_geometry()  # CHAMA AQUI
+        self.apply_futuristic_style()
+        # Move this AFTER init_ui() to ensure slide_list exists
+        self.update_slide_display_no_typing()
+
+    
+    def init_ui(self):
+        # Set frameless window first
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.setWindowTitle("CAS – Cool App System")
+        
+        
+        # Create main widget that will contain everything
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        
+        # Create main vertical layout for the entire window
+        window_layout = QVBoxLayout(main_widget)
+        window_layout.setContentsMargins(0, 0, 0, 0)
+        window_layout.setSpacing(0)
+        
+        # Add the custom title bar at the top FIRST
+        self.title_bar = CustomTitleBar(self)
+        window_layout.addWidget(self.title_bar)
+        
+        # Create and add menu bar manually (since we're frameless)
+        self.create_menu_bar()
+        window_layout.addWidget(self.menu_widget)
+        
+        # Create the content widget for your existing UI
+        content_widget = QWidget()
+        window_layout.addWidget(content_widget)
+        
+        # Now create your existing main layout inside the content widget
+        main_layout = QHBoxLayout()
+        main_layout.setSpacing(20)
+        content_widget.setLayout(main_layout)
+
+        # LEFT PANEL (your existing code continues here...)
+        left_panel = QVBoxLayout()
+        left_panel.setSpacing(15)
+        left_widget = QWidget()
+        left_widget.setLayout(left_panel)
+        left_widget.setMaximumWidth(420)
+
+        # Tabs
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setTabsClosable(True)
+        self.tab_widget.tabCloseRequested.connect(self.close_tab)
+        self.tab_widget.currentChanged.connect(self.tab_changed)
+        left_panel.addWidget(self.tab_widget)
+
+        tab_btn_layout = QHBoxLayout()
+        self.add_tab_btn = QPushButton("+ Add Theme")
+        self.rename_tab_btn = QPushButton("Rename Theme")
+        self.add_tab_btn.clicked.connect(self.add_new_tab)
+        self.rename_tab_btn.clicked.connect(self.rename_current_tab)
+        tab_btn_layout.addWidget(self.add_tab_btn)
+        tab_btn_layout.addWidget(self.rename_tab_btn)
+        left_panel.addLayout(tab_btn_layout)
+
+        self.setup_tabs()
+
+        # RIGHT PANEL
+        right_panel = QVBoxLayout()
+        right_panel.setSpacing(5)
+        right_widget = QWidget()
+        right_widget.setLayout(right_panel)
+
+        # Slides Grid GroupBox
+        slide_group = QGroupBox("\U0001F4CB SLIDES View)")
+        slide_layout = QVBoxLayout()
+
+        self.slide_list = QListWidget()
+        self.slide_list.setViewMode(QListView.IconMode)
+        self.slide_list.setIconSize(QSize(240, 80))
+        self.slide_list.setGridSize(QSize(240, 100))
+        self.slide_list.setResizeMode(QListWidget.Adjust)
+        self.slide_list.setMovement(QListView.Static)
+        self.slide_list.setSpacing(1)
+        self.slide_list.setFlow(QListView.LeftToRight)
+        self.slide_list.setWrapping(True)
+        self.slide_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.slide_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.slide_list.setStyleSheet("""
+            QListWidget {
+                background-color: #21262d;
+                border: 2px solid #30363d;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QListWidget::item {
+                background-color: #0a0a0a;
+                border: 2px solid #30363d;
+                border-radius: 8px;
+                color: #e6edf3;
+                padding: 10px;
+                text-align: center;
+                margin: 4px;
+            }
+            QListWidget::item:hover {
+                border: 2px solid #00d4aa;
+                background-color: #1a1a1a;
+            }
+            QListWidget::item:selected {
+                background-color: #003d32;
+                border-color: #00d4aa;
+                color: #00d4aa;
+            }
+        """)
+
+        self.slide_list.itemClicked.connect(self.slide_selected)
+
+        slide_layout.addWidget(self.slide_list)
+
+        slide_btn_layout = QHBoxLayout()
+        add_slide_btn = QPushButton("\u2795 Add Slide")
+        duplicate_slide_btn = QPushButton("📄 Duplicate Slide")  # New button for duplicating slides
+        delete_slide_btn = QPushButton("\U0001F5D1\uFE0F Delete Slide")
+        add_slide_btn.clicked.connect(self.add_slide)
+        duplicate_slide_btn.clicked.connect(self.duplicate_slide)  # Connect to the duplicate method
+        delete_slide_btn.clicked.connect(self.delete_slide)
+        slide_btn_layout.addWidget(add_slide_btn)
+        slide_btn_layout.addWidget(duplicate_slide_btn)  # Add the duplicate button
+        slide_btn_layout.addWidget(delete_slide_btn)
+        slide_layout.addLayout(slide_btn_layout)
+
+        slide_group.setLayout(slide_layout)
+        right_panel.addWidget(slide_group)
+
+        # Display Controls
+        display_group = QGroupBox("\U0001F3AE DISPLAY CONTROLS")
+        display_layout = QVBoxLayout()
+
+        display_btn_layout = QHBoxLayout()
+        self.show_display_btn = QPushButton("\U0001F680 Launch Display")
+        self.hide_display_btn = QPushButton("\U0001F512 Hide Display")
+        self.show_display_btn.clicked.connect(self.show_display_window)
+        self.hide_display_btn.clicked.connect(self.hide_display_window)
+        display_btn_layout.addWidget(self.show_display_btn)
+        display_btn_layout.addWidget(self.hide_display_btn)
+        display_layout.addLayout(display_btn_layout)
+
+        slideshow_layout = QHBoxLayout()
+        self.prev_btn = QPushButton("\u2B05\uFE0F Previous")
+        self.next_btn = QPushButton("\u27A1\uFE0F Next")
+        self.prev_btn.clicked.connect(self.previous_slide)
+        self.next_btn.clicked.connect(self.next_slide)
+        slideshow_layout.addWidget(self.prev_btn)
+        slideshow_layout.addWidget(self.next_btn)
+        display_layout.addLayout(slideshow_layout)
+
+        self.slide_counter = QLabel("Slide 1 of 1")
+        self.slide_counter.setAlignment(Qt.AlignCenter)
+        display_layout.addWidget(self.slide_counter)
+
+        display_group.setLayout(display_layout)
+        right_panel.addWidget(display_group)
+
+        # Add to main layout
+        main_layout.addWidget(left_widget)
+        main_layout.addWidget(right_widget)
+
+    def set_scaled_geometry(self):
+        screen = QApplication.primaryScreen()
+        screen_size = screen.size()
+        screen_width = screen_size.width()
+        screen_height = screen_size.height()
+
+        # Tamanho base original
+        base_width = 1300
+        base_height = 1000
+
+        # Só escala se a tela for menor
+        if screen_width < 1980 or screen_height < 1080:
+            scale_w = screen_width / 1980
+            scale_h = screen_height / 1080
+            scale = min(scale_w, scale_h)  # Mantém proporção
+
+            new_width = int(base_width * scale)
+            new_height = int(base_height * scale)
+        else:
+            new_width = base_width
+            new_height = base_height
+
+        # Centraliza a janela na tela
+        x = int((screen_width - new_width) / 2)
+        y = int((screen_height - new_height) / 2)
+
+        self.setGeometry(x, y, new_width, new_height)
+
+    def duplicate_slide(self):
+        """Duplicate the currently selected slide."""
+        if self.current_group_index < len(self.slide_groups):
+            current_group = self.slide_groups[self.current_group_index]
+            
+            if self.current_slide_index < len(current_group.slides):
+                # Get the current slide
+                original_slide = current_group.slides[self.current_slide_index]
+                
+                # Create a new slide as a copy of the original
+                new_slide = Slide()
+                new_slide.text = original_slide.text
+                new_slide.font_family = original_slide.font_family
+                new_slide.font_size = original_slide.font_size
+                new_slide.font_color = original_slide.font_color
+                new_slide.background_image = original_slide.background_image
+                new_slide.video_path = original_slide.video_path
+                new_slide.video_url = original_slide.video_url
+                new_slide.typing_speed = original_slide.typing_speed
+                new_slide.text_alignment = original_slide.text_alignment
+                new_slide.text_x = original_slide.text_x
+                new_slide.text_y = original_slide.text_y
+                
+                # Insert the new slide right after the original slide
+                insert_index = self.current_slide_index + 1
+                current_group.slides.insert(insert_index, new_slide)
+                
+                # Update the slide list and select the new slide
+                self.update_slide_list()
+                self.current_slide_index = insert_index  # Select the new slide
+                self.slide_list.setCurrentRow(self.current_slide_index)
+                self.load_slide_data()  # Load the data for the new slide
+                self.update_slide_display_no_typing()  # Update the display
+
+    def create_presenter_json(self):
+        """Create JSON data for the current slide group focusing on last words of each slide"""
+        if self.current_group_index >= len(self.slide_groups):
+            return None
+
+        theme = self.slide_groups[self.current_group_index].name
+        filename = f"data_{theme.lower().replace(' ', '_')}.json"
+        save_path = os.path.join("models", filename)
+
+        os.makedirs("models", exist_ok=True)
+
+        data = []
+        for i, slide in enumerate(self.slide_groups[self.current_group_index].slides):
+            words = slide.text.strip().split()
+            last_words_count = min(6, len(words))
+            last_words = ' '.join(words[-last_words_count:]) if words else ""
+
+            data.append({
+                "slide_index": i,
+                "last_words": last_words.lower(),
+                "word_count": len(words)
+            })
+
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        return save_path
+
+    def train_presenter_model(self):
+        """Train the presenter model using the new JSON structure"""
+        nlp = spacy.load(resource_path("pt_core_news_lg"))
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        json_path = self.create_presenter_json()
+        if not json_path:
+            return
+
+        with open(json_path, 'r', encoding='utf-8') as file:
+            data = json.load(file)
+
+        # Extract data using the new JSON structure
+        questions = [entry['last_words'] for entry in data]  # Changed from 'question' to 'last_words'
+        answers = [str(entry['slide_index']) for entry in data]  # Changed from 'answer' to 'slide_index'
+        
+        # Process questions with NLP if available, otherwise use simple tokenization
+        try:
+            # If you have spacy nlp available
+            tokenized_questions = [" ".join([t.text.lower() for t in nlp(q)]) for q in questions]
+        except NameError:
+            # If nlp is not available, use simple tokenization
+            tokenized_questions = [q.lower() for q in questions]
+
+        vectorizer = CountVectorizer()
+        X = vectorizer.fit_transform(tokenized_questions).toarray()
+        encoder = LabelEncoder()
+        y = encoder.fit_transform(answers).ravel()
+
+        model = NeuralNetwork(X.shape[1], [1024]*3, len(set(y)), 0.1).to(device)
+        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        criterion = nn.CrossEntropyLoss()
+
+        X_tensor = torch.tensor(X, dtype=torch.float32)
+        y_tensor = torch.tensor(y, dtype=torch.long)
+        loader = DataLoader(TensorDataset(X_tensor, y_tensor), batch_size=256, shuffle=True)
+
+        total_epochs = 200
+        progress_dialog = TrainingProgressDialog(total_epochs)
+        progress_dialog.show()
+
+        for epoch in range(total_epochs):
+            for bx, by in loader:
+                optimizer.zero_grad()
+                out = model(bx)
+                loss = criterion(out, by)
+                loss.backward()
+                optimizer.step()
+            progress_dialog.update_progress(epoch + 1)
+
+        progress_dialog.close()
+
+        # Garante que a pasta 'models' existe
+        os.makedirs("models", exist_ok=True)
+
+        # Salva dentro da pasta 'models'
+        model_filename = f"model_{self.slide_groups[self.current_group_index].name.lower().replace(' ', '_')}.pth"
+        model_path = os.path.join("models", model_filename)
+
+        torch.save(model.state_dict(), model_path)
+
+        QMessageBox.information(self, "Success", "AI trained and saved")
+        print("AI trained and saved:", model_path)
+
+        self.presenter_model = model
+        self.presenter_vectorizer = vectorizer
+        self.presenter_encoder = encoder
+
+
+    def check_slide_match(self, spoken_text):
+        """Check if spoken text matches the last words of current slide"""
+        if self.current_group_index >= len(self.slide_groups):
+            return False
+        
+        current_group = self.slide_groups[self.current_group_index]
+        if self.current_slide_index >= len(current_group.slides):
+            return False
+        
+        current_slide = current_group.slides[self.current_slide_index]
+        slide_words = current_slide.text.strip().split()
+        
+        if not slide_words:
+            return False
+        
+        # Get last words from current slide (at least 4 or all if fewer)
+        last_words_count = min(4, len(slide_words))
+        slide_last_words = ' '.join(slide_words[-last_words_count:]).lower()
+        
+        # Get last words from spoken text
+        spoken_words = spoken_text.strip().lower().split()
+        spoken_last_words_count = min(4, len(spoken_words))
+        spoken_last_words = ' '.join(spoken_words[-spoken_last_words_count:])
+        
+        # Check for match (allow partial matches for flexibility)
+        # Calculate similarity - at least 10% of words should match
+        slide_word_set = set(slide_last_words.split())
+        spoken_word_set = set(spoken_last_words.split())
+        
+        if not slide_word_set:
+            return False
+        
+        # Calculate match percentage
+        intersection = slide_word_set.intersection(spoken_word_set)
+        match_percentage = len(intersection) / len(slide_word_set)
+        
+        print(f"Slide words: '{slide_last_words}'")
+        print(f"Spoken words: '{spoken_last_words}'")
+        print(f"Match percentage: {match_percentage:.2f}")
+        
+        return match_percentage >= 0.1  # 10% match threshold
+
+    def start_presenter_mode_ai(self):
+        """Start AI presenter mode that listens for last words of current slide"""
+        try:
+            import speech_recognition as sr
+            
+            self.presenter_active = True
+            self.presenter_used_slides = set()  # Track slides that have been completed
+            
+            recognizer = sr.Recognizer()
+            mic = sr.Microphone()
+            
+            # Show status message
+            print("Starting AI Presenter Mode...")
+            print("Speak the last words of your current slide to advance to the next one.")
+            
+            def listen_loop():
+                with mic as source:
+                    recognizer.adjust_for_ambient_noise(source, duration=3)
+                    print("Microphone calibrated. Ready to listen...")
+                    
+                    while self.presenter_active:
+                        try:
+                            # Listen for audio with a timeout
+                            # Determina tempo de escuta baseado no slide atual
+                            current_slide = self.slide_groups[self.current_group_index].slides[self.current_slide_index]
+                            word_count = len(current_slide.text.strip().split())
+
+                            # Cada palavra demora em média ~0.6 segundos pra ser falada. Ajustável.
+                            palavras_para_ouvir = max(1, word_count - 1)
+                            tempo_estimado = palavras_para_ouvir * 0.6
+
+                            # Limita o tempo máximo pra evitar travamento
+                            tempo_max = min(tempo_estimado, 15.0)  # até no máx 10 segundos
+
+                            print(f"[DEBUG] Slide com {word_count} palavras, ouvindo por {tempo_max:.1f}s")
+
+                            audio = recognizer.listen(source, timeout=7, phrase_time_limit=tempo_max)
+                            text = recognizer.recognize_google(audio, language="pt-BR")
+
+                            print(f"Recognized: '{text}'")
+                            
+                            # Check if current slide hasn't been completed yet
+                            if self.current_slide_index not in self.presenter_used_slides:
+                                # Check if spoken text matches current slide's last words
+                                if self.check_slide_match(text):
+                                    print(f"Match found! Advancing from slide {self.current_slide_index + 1}")
+                                    
+                                    # Mark current slide as completed
+                                    self.presenter_used_slides.add(self.current_slide_index)
+                                    
+                                    # Advance to next slide
+                                    QMetaObject.invokeMethod(self, "advance_to_next_slide", 
+                                                        Qt.QueuedConnection)
+                            else:
+                                print(f"Slide {self.current_slide_index + 1} already completed, ignoring...")
+                                
+                        except sr.WaitTimeoutError:
+                            # Timeout is normal, just continue listening
+                            pass
+                        except sr.UnknownValueError:
+                            print("Could not understand audio")
+                        except sr.RequestError as e:
+                            print(f"Speech recognition error: {e}")
+                        except Exception as e:
+                            print(f"Audio processing error: {e}")
+            
+            # Start listening in a separate thread
+            import threading
+            self.listen_thread = threading.Thread(target=listen_loop, daemon=True)
+            self.listen_thread.start()
+            
+            # Show feedback to user
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, "AI Presenter Mode", 
+                                "AI Presenter Mode activated!\n\n"
+                                "Speak the last words of your current slide to advance to the next one.\n"
+                                "The system will listen for matches and automatically advance slides.")
+            
+        except ImportError:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Missing Library", 
+                            "Speech recognition library not installed.\n"
+                            "Please install: pip install SpeechRecognition pyaudio")
+        except Exception as e:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Error", f"Failed to start presenter mode: {str(e)}")
+
+    @pyqtSlot()
+    def advance_to_next_slide(self):
+        """Slot that advances to the next slide"""
+        try:
+            # Use the existing next_slide function
+            self.next_slide()
+            print(f"Advanced to slide {self.current_slide_index + 1}")
+            
+            # Check if we've reached the end of the presentation
+            if self.current_group_index < len(self.slide_groups):
+                current_group = self.slide_groups[self.current_group_index]
+                if self.current_slide_index >= len(current_group.slides) - 1:
+                    print("Reached end of presentation!")
+                    self.stop_presenter_mode()
+                    from PyQt5.QtWidgets import QMessageBox
+                    QMessageBox.information(self, "Presentation Complete", 
+                                        "You've reached the end of your presentation!")
+        except Exception as e:
+            print(f"Error advancing slide: {e}")
+
+    def stop_presenter_mode(self):
+        """Stop the AI presenter mode"""
+        self.presenter_active = False
+        if hasattr(self, 'presenter_used_slides'):
+            del self.presenter_used_slides
+        QMessageBox.information(self, "Presentation ENDED", "AI Presenter Mode stopped.")
+        print("AI Presenter Mode stopped.")
+
+
+    def choose_font_color(self):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            if self.current_group_index < len(self.slide_groups):
+                current_group = self.slide_groups[self.current_group_index]
+                if self.current_slide_index < len(current_group.slides):
+                    widgets = self.get_current_tab_widgets()
+                    if widgets:
+                        if widgets['apply_font_all_cb'].isChecked():
+                            # Apply to all slides in current group
+                            for slide in current_group.slides:
+                                slide.font_color = color.name()
+                        else:
+                            # Apply to current slide only
+                            current_group.slides[self.current_slide_index].font_color = color.name()
+                        
+                        # Update the color button appearance
+                        widgets['font_color_btn'].setStyleSheet(
+                            f"background-color: {color.name()}; border: 2px solid #00ffff; border-radius: 5px; min-height: 30px;"
+                        )
+                        self.update_slide_display_no_typing()
+        
+    def setup_tabs(self):
+        for i, group in enumerate(self.slide_groups):
+            tab_widget = self.create_tab_content()
+            self.tab_widget.addTab(tab_widget, group.name)
+        
+        if self.slide_groups:
+            self.load_tab_data(0)
+    
+    def create_tab_content(self):
+        tab_widget = QWidget()
+        tab_layout = QVBoxLayout()
+        tab_widget.setLayout(tab_layout)
+        
+        # Text editing
+        text_group = QGroupBox("✏️ TEXT EDITOR")
+        text_layout = QVBoxLayout()
+        
+        text_edit = QTextEdit()
+        text_edit.textChanged.connect(self.text_changed)
+        text_layout.addWidget(text_edit)
+        
+        text_group.setLayout(text_layout)
+        tab_layout.addWidget(text_group)
+        
+        # Font settings
+        font_group = QGroupBox("🎨 FONT SETTINGS")
+        font_layout = QVBoxLayout()
+        
+        # Font family
+        font_family_layout = QHBoxLayout()
+        font_family_layout.addWidget(QLabel("Font:"))
+        font_combo = QFontComboBox()
+        font_combo.currentFontChanged.connect(self.font_changed)
+        font_family_layout.addWidget(font_combo)
+        font_layout.addLayout(font_family_layout)
+        
+        # Font size
+        font_size_layout = QHBoxLayout()
+        font_size_layout.addWidget(QLabel("Size:"))
+        font_size_spin = QSpinBox()
+        font_size_spin.setRange(8, 200)
+        font_size_spin.setValue(30)
+        font_size_spin.valueChanged.connect(self.font_changed)
+        font_size_layout.addWidget(font_size_spin)
+        font_layout.addLayout(font_size_layout)
+        
+        # Font color
+        font_color_layout = QHBoxLayout()
+        font_color_layout.addWidget(QLabel("Color:"))
+        font_color_btn = QPushButton()
+        font_color_btn.setStyleSheet("background-color: white; border: 2px solid #00ffff; border-radius: 5px; min-height: 30px;")
+        font_color_btn.clicked.connect(self.choose_font_color)
+        font_color_layout.addWidget(font_color_btn)
+        font_layout.addLayout(font_color_layout)
+        
+        # Apply to all slides checkbox
+        apply_font_all_cb = QCheckBox("Apply to all slides in this theme")
+        font_layout.addWidget(apply_font_all_cb)
+        
+        font_group.setLayout(font_layout)
+        tab_layout.addWidget(font_group)
+        
+        # Background settings
+        bg_group = QGroupBox("🖼️ BACKGROUND")
+        bg_layout = QVBoxLayout()
+        
+        # Background image
+        bg_img_btn = QPushButton("🌄 Choose Image")
+        bg_img_btn.clicked.connect(self.choose_background_image)
+        bg_layout.addWidget(bg_img_btn)
+        
+        
+        # Apply to all slides checkbox
+        apply_bg_all_cb = QCheckBox("Apply to all slides in this theme")
+        bg_layout.addWidget(apply_bg_all_cb)
+        
+        # Remove background button
+        remove_bg_btn = QPushButton("🗑️ Remove Background")
+        remove_bg_btn.clicked.connect(self.remove_background)
+        bg_layout.addWidget(remove_bg_btn)
+        
+        bg_group.setLayout(bg_layout)
+        tab_layout.addWidget(bg_group)
+        
+        return tab_widget
+    
+    def apply_futuristic_style(self):
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #0d1117;
+                color: #e6edf3;
+            }
+            
+            QWidget {
+                background-color: #0d1117;
+                color: #e6edf3;
+                font-family: 'Segoe UI', 'Arial';
+            }
+            
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #30363d;
+                border-radius: 8px;
+                margin-top: 1ex;
+                padding-top: 15px;
+                background-color: #161b22;
+            }
+            
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 8px 0 8px;
+                color: #00d4aa;
+                font-size: 12px;
+            }
+            
+            QPushButton {
+                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                          stop: 0 #238636, stop: 1 #1f7a32);
+                border: 1px solid #2ea043;
+                border-radius: 6px;
+                color: white;
+                font-weight: bold;
+                padding: 8px 16px;
+                min-height: 20px;
+            }
+            
+            QPushButton:hover {
+                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                          stop: 0 #2ea043, stop: 1 #238636);
+                border: 1px solid #46954a;
+            }
+            
+            QPushButton:pressed {
+                background: #1f7a32;
+            }
+            
+            QTextEdit {
+                background-color: #21262d;
+                border: 2px solid #30363d;
+                border-radius: 6px;
+                color: #e6edf3;
+                padding: 8px;
+                font-size: 11px;
+            }
+            
+            QTextEdit:focus {
+                border: 2px solid #00d4aa;
+            }
+            
+            QListWidget {
+                background-color: #21262d;
+                border: 2px solid #30363d;
+                border-radius: 6px;
+                color: #e6edf3;
+                padding: 4px;
+            }
+            
+            QListWidget::item {
+                padding: 8px;
+                border-radius: 4px;
+                margin: 2px;
+            }
+            
+            QListWidget::item:selected {
+                background-color: #00d4aa;
+                color: #0d1117;
+                font-weight: bold;
+            }
+            
+            QListWidget::item:hover {
+                background-color: #30363d;
+            }
+            
+            QTabWidget::pane {
+                border: 2px solid #30363d;
+                border-radius: 8px;
+                background-color: #161b22;
+                margin-top: -1px;
+            }
+            
+            QTabBar::tab {
+                background-color: #21262d;
+                border: 2px solid #30363d;
+                border-bottom: none;
+                border-radius: 6px 6px 0 0;
+                padding: 8px 16px;
+                color: #e6edf3;
+                font-weight: bold;
+                margin-right: 2px;
+            }
+            
+            QTabBar::tab:selected {
+                background-color: #00d4aa;
+                color: #0d1117;
+                border: 2px solid #00d4aa;
+            }
+            
+            QTabBar::tab:hover {
+                background-color: #30363d;
+            }
+            
+            QComboBox, QSpinBox {
+                background-color: #21262d;
+                border: 2px solid #30363d;
+                border-radius: 6px;
+                color: #e6edf3;
+                padding: 6px;
+                min-height: 20px;
+            }
+            
+            QComboBox:focus, QSpinBox:focus {
+                border: 2px solid #00d4aa;
+            }
+            
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid #e6edf3;
+            }
+            
+            QCheckBox {
+                color: #e6edf3;
+                spacing: 8px;
+            }
+            
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+            }
+            
+            QCheckBox::indicator:unchecked {
+                background-color: #21262d;
+                border: 2px solid #30363d;
+                border-radius: 3px;
+            }
+            
+            QCheckBox::indicator:checked {
+                background-color: #00d4aa;
+                border: 2px solid #00d4aa;
+                border-radius: 3px;
+                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIGZpbGw9IiMwZDExMTciIHZpZXdCb3g9IjAgMCAxNiAxNiI+PHBhdGggZD0ibTEwLjk3IDQuOTctLjAyLjAyLTMuNDcgMy40Ny0xLjQ4LTEuNDhhLjc1Ljc1IDAgMCAwLTEuMDggMS4wNGwuMDIuMDJMMSA4bC4wMS4wMWEuNzUuNzUgMCAwIDAgMS4wNi0uMDJsMS40Ny0xLjQ3IDMuNDctMy40N2EuNzUuNzUgMCAwIDAtMS4wNi0xLjA2WiIvPjwvc3ZnPg==);
+            }
+            
+            QLabel {
+                color: #e6edf3;
+            }
+            
+            QMenuBar {
+                background-color: #161b22;
+                color: #e6edf3;
+                border-bottom: 1px solid #30363d;
+            }
+            
+            QMenuBar::item {
+                background: transparent;
+                padding: 4px 8px;
+            }
+            
+            QMenuBar::item:selected {
+                background-color: #00d4aa;
+                color: #0d1117;
+                border-radius: 4px;
+            }
+            
+            QMenu {
+                background-color: #21262d;
+                border: 1px solid #30363d;
+                border-radius: 6px;
+                color: #e6edf3;
+            }
+            
+            QMenu::item {
+                padding: 8px 24px;
+                border-radius: 4px;
+                margin: 2px;
+            }
+            
+            QMenu::item:selected {
+                background-color: #00d4aa;
+                color: #0d1117;
+            }
+        """)
+    
+    def get_current_tab_widgets(self):
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab:
+            return None
+        
+        # Find widgets in the current tab
+        slide_list = current_tab.findChild(QListWidget)
+        text_edit = current_tab.findChild(QTextEdit)
+        font_combo = current_tab.findChild(QFontComboBox)
+        font_size_spin = current_tab.findChild(QSpinBox)
+        
+        # Find the font color button (look for buttons and get the right one)
+        buttons = current_tab.findChildren(QPushButton)
+        font_color_btn = None
+        for btn in buttons:
+            if "background-color:" in btn.styleSheet():
+                font_color_btn = btn
+                break
+        
+        
+        
+        checkboxes = current_tab.findChildren(QCheckBox)
+        apply_font_all_cb = checkboxes[0] if len(checkboxes) > 0 else None
+        apply_bg_all_cb = checkboxes[1] if len(checkboxes) > 1 else None
+        
+        return {
+            'slide_list': slide_list,
+            'text_edit': text_edit,
+            'font_combo': font_combo,
+            'font_size_spin': font_size_spin,
+            'font_color_btn': font_color_btn,
+            'apply_font_all_cb': apply_font_all_cb,
+            'apply_bg_all_cb': apply_bg_all_cb
+        }
+    
+    def choose_background_image(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Choose Background Image", "", "Images (*.png *.jpg *.jpeg *.bmp *.gif)")
+        if file_path:
+            if self.current_group_index < len(self.slide_groups):
+                current_group = self.slide_groups[self.current_group_index]
+                widgets = self.get_current_tab_widgets()
+                
+                if widgets and widgets['apply_bg_all_cb']:
+                    if widgets['apply_bg_all_cb'].isChecked():
+                        # Apply to all slides in current group
+                        for slide in current_group.slides:
+                            slide.background_image = file_path
+                    else:
+                        # Apply to current slide only
+                        if self.current_slide_index < len(current_group.slides):
+                            current_group.slides[self.current_slide_index].background_image = file_path
+                    
+                    self.update_slide_display_no_typing()
+    
+    def add_new_tab(self):
+        name, ok = QInputDialog.getText(self, 'New Theme', 'Enter theme name:')
+        if ok and name:
+            new_group = SlideGroup(name)
+            self.slide_groups.append(new_group)
+            
+            tab_widget = self.create_tab_content()
+            self.tab_widget.addTab(tab_widget, name)
+            self.tab_widget.setCurrentIndex(len(self.slide_groups) - 1)
+            
+            self.current_group_index = len(self.slide_groups) - 1
+            self.current_slide_index = 0
+            self.load_tab_data(self.current_group_index)
+    
+    def rename_current_tab(self):
+        current_index = self.tab_widget.currentIndex()
+        if current_index >= 0:
+            current_name = self.slide_groups[current_index].name
+            name, ok = QInputDialog.getText(self, 'Rename Theme', 'Enter new name:', text=current_name)
+            if ok and name:
+                self.slide_groups[current_index].name = name
+                self.tab_widget.setTabText(current_index, name)
+    
+    def close_tab(self, index):
+        if len(self.slide_groups) > 1:
+            reply = QMessageBox.question(self, 'Close Theme', 
+                                       f'Are you sure you want to close "{self.slide_groups[index].name}"?',
+                                       QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                del self.slide_groups[index]
+                self.tab_widget.removeTab(index)
+                
+                if index <= self.current_group_index:
+                    self.current_group_index = max(0, self.current_group_index - 1)
+                
+                self.load_tab_data(self.current_group_index)
+    
+    def tab_changed(self, index):
+        if index >= 0:
+            self.current_group_index = index
+            self.current_slide_index = 0
+            self.load_tab_data(index)
+    
+    def load_tab_data(self, group_index):
+        if 0 <= group_index < len(self.slide_groups):
+            widgets = self.get_current_tab_widgets()
+            if widgets:
+                self.update_slide_list()
+                self.load_slide_data()
+                self.update_slide_display_no_typing()
+    
+    def update_slide_list(self):
+        # Safety check - ensure slide_list exists
+        if not hasattr(self, 'slide_list'):
+            return
+            
+        # Clear the main slide_list widget
+        self.slide_list.clear()
+        
+        if self.current_group_index >= len(self.slide_groups):
+            return
+        
+        current_group = self.slide_groups[self.current_group_index]
+        
+        for i, slide in enumerate(current_group.slides):
+            # Create preview text (first 50-60 chars work better for the grid size)
+            preview_text = slide.text.strip()
+            if len(preview_text) > 25:
+                preview_text = preview_text[:25] + "..."
+            elif not preview_text:
+                preview_text = f"Slide {i+1}"
+            
+            # Create list item
+            item = QListWidgetItem(preview_text)
+            item.setTextAlignment(Qt.AlignCenter)
+            
+            # Optional: Add slide number as tooltip
+            item.setToolTip(f"Slide {i+1}: {slide.text[:100]}...")
+            
+            self.slide_list.addItem(item)
+        
+        # Set current selection
+        if self.current_slide_index < len(current_group.slides):
+            self.slide_list.setCurrentRow(self.current_slide_index)
+        
+        # Update counter
+        total_slides = len(current_group.slides)
+        self.slide_counter.setText(f"Slide {self.current_slide_index + 1} of {total_slides}")
+
+
+    def update_slide_display_no_typing(self):
+        if self.current_group_index < len(self.slide_groups):
+            current_group = self.slide_groups[self.current_group_index]
+            if self.current_slide_index < len(current_group.slides):
+                slide = current_group.slides[self.current_slide_index]
+
+            
+
+
+                # Preparar fonte
+                font = QFont(slide.font_family, max(8, slide.font_size // 4))
+                font.setBold(True)
+
+               
+                
+
+                # Atualizar a janela de exibição se estiver visível
+                if self.display_window.isVisible():
+                    self.display_window.display_slide(slide)
+
+
+
+    
+    def slide_selected(self, item):
+        # Use the instance attribute self.slide_list directly since that's what triggers the event
+        self.current_slide_index = self.slide_list.row(item)
+        self.load_slide_data()
+        self.update_slide_display_no_typing()
+
+   
+    
+    def load_slide_data(self):
+        widgets = self.get_current_tab_widgets()
+        if not widgets or self.current_group_index >= len(self.slide_groups):
+            return
+        
+        current_group = self.slide_groups[self.current_group_index]
+        if self.current_slide_index < len(current_group.slides):
+            slide = current_group.slides[self.current_slide_index]
+            
+            widgets['text_edit'].setText(slide.text)
+            widgets['font_combo'].setCurrentFont(QFont(slide.font_family))
+            widgets['font_size_spin'].setValue(slide.font_size)
+            
+            # Update font color button
+            widgets['font_color_btn'].setStyleSheet(
+                f"background-color: {slide.font_color}; border: 2px solid #00ffff; border-radius: 5px; min-height: 30px;"
+            )
+            
+            
+            # Update counter
+            total_slides = len(current_group.slides)
+            self.slide_counter.setText(f"Slide {self.current_slide_index + 1} of {total_slides}")
+    
+    def text_changed(self):
+        if self.current_group_index < len(self.slide_groups):
+            current_group = self.slide_groups[self.current_group_index]
+            if self.current_slide_index < len(current_group.slides):
+                widgets = self.get_current_tab_widgets()
+                if widgets:
+                    current_group.slides[self.current_slide_index].text = widgets['text_edit'].toPlainText()
+                    self.update_slide_list()
+                    self.update_slide_display_no_typing()
+    
+    def font_changed(self):
+        if self.current_group_index < len(self.slide_groups):
+            current_group = self.slide_groups[self.current_group_index]
+            widgets = self.get_current_tab_widgets()
+            if widgets:
+                # Get current font values from the widgets
+                font_family = widgets['font_combo'].currentFont().family()
+                font_size = widgets['font_size_spin'].value()
+                
+                if widgets['apply_font_all_cb'].isChecked():
+                    # Apply to all slides in current group
+                    for slide in current_group.slides:
+                        slide.font_family = font_family
+                        slide.font_size = font_size
+                else:
+                    # Apply to current slide only
+                    if self.current_slide_index < len(current_group.slides):
+                        current_group.slides[self.current_slide_index].font_family = font_family
+                        current_group.slides[self.current_slide_index].font_size = font_size
+                
+                self.update_slide_display_no_typing()
+    
+    
+    def remove_background(self):
+        widgets = self.get_current_tab_widgets()
+        if widgets and self.current_group_index < len(self.slide_groups):
+            current_group = self.slide_groups[self.current_group_index]
+            if widgets['apply_bg_all_cb'].isChecked():
+                for slide in current_group.slides:
+                    slide.background_image = ""
+            else:
+                if self.current_slide_index < len(current_group.slides):
+                    current_group.slides[self.current_slide_index].background_image = ""
+            
+            self.update_slide_display_no_typing()
+    
+    def add_slide(self):
+        if self.current_group_index < len(self.slide_groups):
+            current_group = self.slide_groups[self.current_group_index]
+            current_group.slides.append(Slide())
+            self.current_slide_index = len(current_group.slides) - 1
+            self.update_slide_list()
+            self.load_slide_data()
+            self.update_slide_display_no_typing()
+    
+    def delete_slide(self):
+        if self.current_group_index < len(self.slide_groups):
+            current_group = self.slide_groups[self.current_group_index]
+            if len(current_group.slides) > 1 and self.current_slide_index < len(current_group.slides):
+                del current_group.slides[self.current_slide_index]
+                if self.current_slide_index >= len(current_group.slides):
+                    self.current_slide_index = len(current_group.slides) - 1
+                self.update_slide_list()
+                self.load_slide_data()
+                self.update_slide_display_no_typing()
+
+
+    def show_typing_effect_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Set Typing Speed")
+        dialog.setGeometry(200, 200, 300, 150)
+
+        layout = QVBoxLayout(dialog)
+
+        speed_label = QLabel("Set typing speed (milliseconds per character):", dialog)
+        layout.addWidget(speed_label)
+
+        self.speed_spinbox = QSpinBox(dialog)
+        self.speed_spinbox.setRange(0, 1000)  # Set range for speed
+        self.speed_spinbox.setValue(0)  # Default speed
+        layout.addWidget(self.speed_spinbox)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec_() == QDialog.Accepted:
+            # Save the speed to the current slide
+            speed = self.speed_spinbox.value()
+            if self.current_group_index < len(self.slide_groups):
+                current_group = self.slide_groups[self.current_group_index]
+                if self.current_slide_index < len(current_group.slides):
+                    current_slide = current_group.slides[self.current_slide_index]
+                    current_slide.typing_speed = speed
+                    self.update_slide_display()  # Refresh preview with new speed
+
+
+    def update_slide_display(self):
+        if self.current_group_index < len(self.slide_groups):
+            current_group = self.slide_groups[self.current_group_index]
+            if self.current_slide_index < len(current_group.slides):
+                slide = current_group.slides[self.current_slide_index]
+                typing_speed = getattr(slide, 'typing_speed', None)  # pode ser None, 0 ou int > 0
+
+                # Limpar preview antes de redesenhar
+                
+
+                # Preparar fonte
+                font = QFont(slide.font_family, max(8, slide.font_size // 4))
+                font.setBold(True)
+
+                
+
+                # Atualiza janela de display se visível
+                if self.display_window.isVisible():
+                    self.display_window.display_slide(slide)
+
+
+
+    def show_display_window(self):
+        self.display_window.show()
+        self.display_window.raise_()
+        self.display_window.activateWindow()
+        self.update_slide_display()
+        self.setFocus()  # Ensure the main window has focus
+    
+    def hide_display_window(self):
+        self.display_window.hide()
+    
+    def previous_slide(self):
+        if self.current_slide_index > 0:
+            self.current_slide_index -= 1
+            # Directly access self.slide_list
+            self.slide_list.setCurrentRow(self.current_slide_index)
+            self.load_slide_data()
+            self.update_slide_display()  # This will now show the typing effect
+   
+
+    def next_slide(self):
+       if self.current_group_index < len(self.slide_groups):
+           current_group = self.slide_groups[self.current_group_index]
+           if self.current_slide_index < len(current_group.slides) - 1:
+               self.current_slide_index += 1
+               # Directly access self.slide_list
+               self.slide_list.setCurrentRow(self.current_slide_index)
+               self.load_slide_data()
+               self.update_slide_display()  # This will now show the typing effect
+   
+
+    def choose_video_as_background(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, 
+            "Choose Video for Background", 
+            "", 
+            "Videos (*.mp4 *.avi *.mov *.mkv *.wmv *.flv);;All Files (*)"
+        )
+        if file_path:
+            if self.current_group_index < len(self.slide_groups):
+                current_group = self.slide_groups[self.current_group_index]
+                if self.current_slide_index < len(current_group.slides):
+                    current_group.slides[self.current_slide_index].video_path = file_path
+                    self.display_window.play_video(file_path)  # Play the new video immediately
+
+
+    def open_resolution_dialog(self):
+        dialog = ResolutionDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            width, height = dialog.get_resolution()
+            self.display_window.setGeometry(100, 100, width, height)  # Set the new geometry
+            self.display_window.show()  # Show the display window with the new size
+    
+    def create_menu_bar(self):
+        self.menu_widget = QMenuBar(self)  # ✅ Create the menu bar widget manually
+
+        # File menu
+        file_menu = self.menu_widget.addMenu('📁 File')
+
+        new_action = QAction('🆕 New Project', self)
+        new_action.setShortcut('Ctrl+N')
+        new_action.triggered.connect(self.new_project)
+        file_menu.addAction(new_action)
+
+        open_action = QAction('📂 Open Project', self)
+        open_action.setShortcut('Ctrl+O')
+        open_action.triggered.connect(self.open_project)
+        file_menu.addAction(open_action)
+
+        file_menu.addSeparator()
+        
+
+        save_action = QAction('💾 Save Project', self)
+        save_action.setShortcut('Ctrl+S')
+        save_action.triggered.connect(self.save_project)
+        file_menu.addAction(save_action)
+
+        save_as_action = QAction('💾 Save Project As...', self)
+        save_as_action.setShortcut('Ctrl+Shift+S')
+        save_as_action.triggered.connect(self.save_project_as)
+        file_menu.addAction(save_as_action)
+
+        file_menu.addSeparator()
+
+        exit_action = QAction('🚪 Exit', self)
+        exit_action.setShortcut('Ctrl+Q')
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        # View menu
+        view_menu = self.menu_widget.addMenu('👁️ View')
+
+        fullscreen_action = QAction('🖥️ Toggle Display Fullscreen', self)
+        fullscreen_action.setShortcut('F11')
+        fullscreen_action.triggered.connect(self.toggle_display_fullscreen)
+        fullscreen_action.triggered.connect(self.toggle_display_fullscreen)
+        view_menu.addAction(fullscreen_action)
+
+        exit_fullscreen_action = QAction('🧯 Exit Fullscreen Only', self)
+        exit_fullscreen_action.triggered.connect(self.exit_display_fullscreen_only)
+        view_menu.addAction(exit_fullscreen_action)
+
+        typing_effect_action = QAction('⌨️ Show Typing Effect', self)
+        typing_effect_action.triggered.connect(self.show_typing_effect_dialog)
+        view_menu.addAction(typing_effect_action)
+
+        set_resolution_action = QAction('🔧 Set Display Resolution', self)
+        set_resolution_action.triggered.connect(self.open_resolution_dialog)
+        view_menu.addAction(set_resolution_action)
+
+        # Help menu
+        help_menu = self.menu_widget.addMenu('❓ Help')
+
+        about_action = QAction('ℹ️ About', self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
+
+        # Video Background Menu
+        video_menu = self.menu_widget.addMenu('🎥 Video settings')
+
+        set_video_action = QAction('🌄 Set Video as Background', self)
+        set_video_action.triggered.connect(self.choose_video_as_background)
+        set_video_action.triggered.connect(self.show_display_window)
+        video_menu.addAction(set_video_action)
+
+        stop_video_action = QAction('⏹️ Stop Video Background', self)
+        stop_video_action.triggered.connect(self.display_window.stop_video)
+        video_menu.addAction(stop_video_action)
+
+        play_video_action = QAction('▶️ Play Video Background', self)
+        play_video_action.triggered.connect(self.display_window.play_current_video)
+        video_menu.addAction(play_video_action)
+
+        open_url_action = QAction('🌐 Play Video from URL', self)
+        open_url_action.triggered.connect(self.ask_url_and_play)
+        video_menu.addAction(open_url_action)
+
+        youtube_action = QAction('▶️ Open YouTube', self)
+        youtube_action.triggered.connect(lambda: self.play_platform_url("https://www.youtube.com"))
+        video_menu.addAction(youtube_action)
+
+        insta_action = QAction('📸 Open Instagram', self)
+        insta_action.triggered.connect(lambda: self.play_platform_url("https://www.instagram.com"))
+        video_menu.addAction(insta_action)
+
+        facebook_action = QAction('📘 Open Facebook', self)
+        facebook_action.triggered.connect(lambda: self.play_platform_url("https://www.facebook.com"))
+        video_menu.addAction(facebook_action)
+
+        refresh_action = QAction("🔁 Refresh", self)
+        refresh_action.triggered.connect(self.refresh_display_window)
+        self.menu_widget.addAction(refresh_action)
+
+        extractor_submenu = self.menu_widget.addMenu("🔧 Import")
+
+        # Add PDF extractor to submenu
+        pdf_extractor = QAction("📄 PDF extractor", self)
+        pdf_extractor.triggered.connect(self.pdf_extractor)
+        extractor_submenu.addAction(pdf_extractor)
+
+        # Add URL extractor to submenu
+        URL_extractor = QAction("🛜 URLs extractor", self)
+        URL_extractor.triggered.connect(self.URL_extractor)
+        extractor_submenu.addAction(URL_extractor)
+
+        # Cria o submenu "Apresentação"
+        apresent_menu = self.menu_widget.addMenu("🎬 Present")
+
+        # Adiciona os botões ao submenu
+        train_ai_action = QAction('🧠 Train AI for this topic', self)
+        train_ai_action.triggered.connect(self.train_presenter_model)
+        apresent_menu.addAction(train_ai_action)
+
+        presenter_ai_action = QAction("🎤 Presenter Mode (AI)", self)
+        presenter_ai_action.triggered.connect(self.start_presenter_mode_ai)
+        apresent_menu.addAction(presenter_ai_action)
+
+        stop_presenter_action = QAction("🛑 Stop Presenter Mode", self)
+        stop_presenter_action.triggered.connect(self.stop_presenter_mode)
+        apresent_menu.addAction(stop_presenter_action)
+
+        open_multiple_action = QAction('📂 Open Multiple .cas Files', self)
+        open_multiple_action.triggered.connect(self.open_multiple_projects)
+        file_menu.addAction(open_multiple_action)
+
+    def pdf_extractor(self):
+        self.extractor_window = HymnExtractorGUI()
+        self.extractor_window.show()
+
+    def URL_extractor(self):
+        self.URLs_extractor = LyricsExtractorGUI()
+        self.URLs_extractor.show()
+
+
+
+    def open_multiple_projects(self):
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Open Multiple .cas Files",
+            "",
+            "CAS Files (*.cas);;All Files (*)"
+        )
+
+        if not file_paths:
+            return
+
+        for file_path in file_paths:
+            try:
+                with open(file_path, 'rb') as f:
+                    encrypted_data = f.read()
+
+                json_data = decrypt_data(encrypted_data)
+                project_data = json.loads(json_data)
+
+                for group_data in project_data.get('slide_groups', []):
+                    group = SlideGroup(group_data.get('name', 'Unnamed Group'))
+                    group.slides = []
+
+                    for slide_data in group_data.get('slides', []):
+                        slide = Slide()
+                        slide.text = slide_data.get('text', '')
+                        slide.font_family = slide_data.get('font_family', 'Arial')
+                        slide.font_size = slide_data.get('font_size', 30)
+                        slide.font_color = slide_data.get('font_color', '#FFFFFF')
+                        slide.background_image = slide_data.get('background_image', '')
+                        slide.video_path = slide_data.get('video_path', '')
+                        slide.video_url = slide_data.get('URLs', '')
+
+                        alignment_value = slide_data.get('text_alignment', Qt.AlignCenter)
+                        if isinstance(alignment_value, int):
+                            slide.text_alignment = Qt.AlignmentFlag(alignment_value)
+                        else:
+                            slide.text_alignment = alignment_value
+
+                        slide.text_x = slide_data.get('text_x', 0.5)
+                        slide.text_y = slide_data.get('text_y', 0.5)
+                        slide.typing_speed = slide_data.get('typing_speed', 0)
+
+                        group.slides.append(slide)
+
+                    if not group.slides:
+                        group.slides.append(Slide())
+
+                    self.slide_groups.append(group)
+
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"❌ Failed to load file {file_path}: {str(e)}")
+
+        # Atualiza a interface depois de carregar tudo
+        self.tab_widget.clear()
+        self.setup_tabs()
+        self.tab_widget.setCurrentIndex(self.current_group_index)
+
+
+
+    def play_platform_url(self, url):
+        # Primeira troca: next slide (força reset layout)
+        self.next_slide()
+
+        # Espera 100ms → volta pro anterior (o real)
+        time.sleep(1)
+        self.previous_slide()
+
+        # Espera +200ms → entra e sai do fullscreen
+        self.toggle_display_fullscreen()
+        self.toggle_display_fullscreen()
+
+        # Espera +200ms → toca o vídeo (já com o display certo)
+        QTimer.singleShot(700, lambda: self.display_window.play_video_url(url))
+
+
+    def ask_url_and_play(self):
+        url, ok = QInputDialog.getText(self, "Play Online Video", "Enter video URL (YouTube, Facebook, etc):")
+        if ok and url:
+            self.display_window.play_video_url(url)
+            # Salva no slide atual
+            if self.current_group_index < len(self.slide_groups):
+                group = self.slide_groups[self.current_group_index]
+                if self.current_slide_index < len(group.slides):
+                    group.slides[self.current_slide_index].video_url = url
+
+    def refresh_display_window(self):
+        # Força o display a redesenhar o slide atual
+        if self.current_group_index < len(self.slide_groups):
+            group = self.slide_groups[self.current_group_index]
+            if self.current_slide_index < len(group.slides):
+                self.display_window.current_slide = None  # força novo render
+                self.display_window.display_slide(group.slides[self.current_slide_index])
+
+
+
+    
+    def toggle_display_fullscreen(self):
+        self.display_window.setWindowState(Qt.WindowNoState)
+        self.display_window.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.display_window.show()  # reaplica com os flags novos
+        QApplication.processEvents()
+
+        if self.display_window.isFullScreen():
+            self.display_window.showNormal()
+        else:
+            self.display_window.showFullScreen()
+
+
+    def exit_display_fullscreen_only(self):
+        self.display_window.setWindowState(Qt.WindowNoState)
+        self.display_window.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.display_window.showNormal()
+        self.display_window.setGeometry(100, 100, 600, 600)
+        QApplication.processEvents()
+
+    
+    def show_about(self):
+        QMessageBox.about(self, "About CAS Presenter", 
+                         """
+                         <h2>🎬 Cool App Systemr</h2>
+                         <p><b>Futuristic Edition v1.2.6</b></p>
+                         <p>Professional presentation software for church LED panels</p>
+                         <p>Features:</p>
+                         <ul>
+                         <li>Multiple themed slide groups</li>
+                         <li>Advanced text and background editing</li>
+                         <li>Fullscreen LED panel display</li>
+                         <li>Professional dark theme interface</li>
+                         </ul>
+                         <p>Created by Gabriel N 💙</p>
+                         """)
+    
+    def new_project(self):
+        reply = QMessageBox.question(self, 'New Project', 
+                                   'Create new project? Unsaved changes will be lost.',
+                                   QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            self.slide_groups = [SlideGroup("Main Presentation")]
+            self.current_group_index = 0
+            self.current_slide_index = 0
+            self.project_file = ""
+            
+            # Clear and recreate tabs
+            self.tab_widget.clear()
+            self.setup_tabs()
+            
+            self.setWindowTitle("CAS – Cool App System")
+    
+    def save_project(self):
+        if not self.project_file:
+            self.save_project_as()
+        else:
+            self.save_to_file(self.project_file)
+    
+    def save_project_as(self):
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Project", "", "Cool App System Files (*.cas)"
+        )
+        
+        if file_path:
+            self.project_file = file_path
+            self.save_to_file(file_path)
+            self.setWindowTitle(f"CAS Editor - {os.path.basename(file_path)}")
+    
+    def save_to_file(self, file_path):
+        try:
+            project_data = {
+                'slide_groups': [],
+                'current_group': self.current_group_index,
+                'current_slide': self.current_slide_index,
+                'version': '2.0',
+                'resolution': {
+                    'width': self.display_window.width(),
+                    'height': self.display_window.height()
+                }
+            }
+            
+            for group in self.slide_groups:
+                group_data = {
+                    'name': group.name,
+                    'slides': []
+                }
+                
+                for slide in group.slides:
+                    slide_data = {
+                        'text': slide.text,
+                        'font_family': slide.font_family,
+                        'font_size': slide.font_size,
+                        'font_color': slide.font_color,
+                        'background_image': slide.background_image,
+                        'video_path': slide.video_path,
+                        'text_alignment': int(slide.text_alignment),
+                        'text_x': slide.text_x,
+                        'text_y': slide.text_y,
+                        'typing_speed': getattr(slide, 'typing_speed', 0),  # <- aqui o novo
+                        'URLs': slide.video_url
+                    }
+                    group_data['slides'].append(slide_data)
+                
+                project_data['slide_groups'].append(group_data)
+
+            # Convert project data to JSON string
+            json_data = json.dumps(project_data, indent=2, ensure_ascii=False)
+
+            # Encrypt the JSON data
+            encrypted_data = encrypt_data(json_data)
+
+            # Save the encrypted data to file
+            with open(file_path, 'wb') as f:
+                f.write(encrypted_data)
+
+            QMessageBox.information(self, "Success", "🎉 Project saved successfully!")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"❌ Failed to save project: {str(e)}")
+
+    
+    def open_project(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open Project", "", "Cool App System Files (*.cas)"
+        )
+        
+        if file_path:
+            self.load_from_file(file_path)
+
+
+    def load_from_file_silently(self, file_path):
+        try:
+            with open(file_path, 'rb') as f:
+                encrypted_data = f.read()
+
+            # Decrypt the data
+            json_data = decrypt_data(encrypted_data)
+
+            # Load slide groups from decrypted JSON data
+            project_data = json.loads(json_data)
+
+            # Load slide groups
+            self.slide_groups = []
+            for group_data in project_data.get('slide_groups', []):
+                group = SlideGroup(group_data.get('name', 'Unnamed Group'))
+                group.slides = []
+                
+                for slide_data in group_data.get('slides', []):
+                    slide = Slide()
+                    slide.text = slide_data.get('text', '')
+                    slide.font_family = slide_data.get('font_family', 'Arial')
+                    slide.font_size = slide_data.get('font_size', 30)
+                    slide.font_color = slide_data.get('font_color', '#FFFFFF')
+                    slide.background_image = slide_data.get('background_image', '')
+                    slide.video_path = slide_data.get('video_path', '')
+                    slide.video_url = slide_data.get('URLs', '')
+
+                    
+                    
+                    alignment_value = slide_data.get('text_alignment', Qt.AlignCenter)
+                    if isinstance(alignment_value, int):
+                        slide.text_alignment = Qt.AlignmentFlag(alignment_value)
+                    else:
+                        slide.text_alignment = alignment_value
+                    
+                    slide.text_x = slide_data.get('text_x', 0.5)
+                    slide.text_y = slide_data.get('text_y', 0.5)
+                    slide.typing_speed = slide_data.get('typing_speed', 0)
+
+                    
+                    group.slides.append(slide)
+                
+                if not group.slides:
+                    group.slides.append(Slide())
+                
+                self.slide_groups.append(group)
+
+            if not self.slide_groups:
+                self.slide_groups = [SlideGroup("Main Presentation")]
+
+            self.current_group_index = project_data.get('current_group', 0)
+            if self.current_group_index >= len(self.slide_groups):
+                self.current_group_index = 0
+            
+            self.current_slide_index = project_data.get('current_slide', 0)
+            current_group = self.slide_groups[self.current_group_index]
+            if self.current_slide_index >= len(current_group.slides):
+                self.current_slide_index = 0
+            
+            resolution = project_data.get('resolution', {})
+            width = resolution.get('width', 600)
+            height = resolution.get('height', 600)
+            self.display_window.setGeometry(100, 100, width, height)
+            
+            self.project_file = file_path
+            self.setWindowTitle(f"CAS Presentation Editor - {os.path.basename(file_path)}")
+            
+            self.tab_widget.clear()
+            self.setup_tabs()
+            self.tab_widget.setCurrentIndex(self.current_group_index)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"❌ Failed to load project: {str(e)}")
+            self.new_project()
+    
+    def load_from_file(self, file_path):
+        try:
+            with open(file_path, 'rb') as f:
+                encrypted_data = f.read()
+
+            # Decrypt the data
+            json_data = decrypt_data(encrypted_data)
+
+            # Load slide groups from decrypted JSON data
+            project_data = json.loads(json_data)
+
+            # Load slide groups
+            self.slide_groups = []
+            for group_data in project_data.get('slide_groups', []):
+                group = SlideGroup(group_data.get('name', 'Unnamed Group'))
+                group.slides = []
+                
+                for slide_data in group_data.get('slides', []):
+                    slide = Slide()
+                    slide.text = slide_data.get('text', '')
+                    slide.font_family = slide_data.get('font_family', 'Arial')
+                    slide.font_size = slide_data.get('font_size', 30)
+                    slide.font_color = slide_data.get('font_color', '#FFFFFF')
+                    slide.background_image = slide_data.get('background_image', '')
+                    slide.video_path = slide_data.get('video_path', '')
+                    slide.video_url = slide_data.get('URLs', '')
+
+                    
+                    alignment_value = slide_data.get('text_alignment', Qt.AlignCenter)
+                    if isinstance(alignment_value, int):
+                        slide.text_alignment = Qt.AlignmentFlag(alignment_value)
+                    else:
+                        slide.text_alignment = alignment_value
+                    
+                    slide.text_x = slide_data.get('text_x', 0.5)
+                    slide.text_y = slide_data.get('text_y', 0.5)
+                    slide.typing_speed = slide_data.get('typing_speed', 0)
+                    
+                    group.slides.append(slide)
+                
+                if not group.slides:
+                    group.slides.append(Slide())
+                
+                self.slide_groups.append(group)
+
+            if not self.slide_groups:
+                self.slide_groups = [SlideGroup("Main Presentation")]
+
+            self.current_group_index = project_data.get('current_group', 0)
+            if self.current_group_index >= len(self.slide_groups):
+                self.current_group_index = 0
+            
+            self.current_slide_index = project_data.get('current_slide', 0)
+            current_group = self.slide_groups[self.current_group_index]
+            if self.current_slide_index >= len(current_group.slides):
+                self.current_slide_index = 0
+            
+            resolution = project_data.get('resolution', {})
+            width = resolution.get('width', 600)
+            height = resolution.get('height', 600)
+            self.display_window.setGeometry(100, 100, width, height)
+            
+            self.project_file = file_path
+            self.setWindowTitle(f"CAS Presentation Editor - {os.path.basename(file_path)}")
+            
+            self.tab_widget.clear()
+            self.setup_tabs()
+            self.tab_widget.setCurrentIndex(self.current_group_index)
+            
+            QMessageBox.information(self, "Success", "🎉 Project loaded successfully!")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"❌ Failed to load project: {str(e)}")
+            self.new_project()
+
+        
+
+    def keyPressEvent(self, event):
+        """Handle keyboard events for slide navigation"""
+        if event.key() == Qt.Key_Left or event.key() == Qt.Key_Up:
+           
+            self.previous_slide()
+        elif event.key() == Qt.Key_Right or event.key() == Qt.Key_Down:
+            self.next_slide()
+        elif event.key() == Qt.Key_Escape:
+            if self.display_window.isFullScreen():
+                self.display_window.showNormal()
+        else:
+            super().keyPressEvent(event)
+
+
+
+class FuturisticLoadingScreen(QSplashScreen):
+    def __init__(self):
+        # Create a custom pixmap for the splash screen
+        pixmap = QPixmap(600, 600)
+        pixmap.fill(QColor('#0d1117'))
+        super().__init__(pixmap)
+        self.setWindowIcon(QIcon(resource_path("CAS.ico")))
+        self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
+        
+        # Animation properties
+        self.rotation_angle = 0
+        self.pulse_scale = 1.0
+        self.progress_value = 0
+        
+        # Setup animations
+        self.setup_animations()
+        
+        # Start the loading simulation
+        self.start_loading()
+    
+    def mousePressEvent(self, event):
+        # Override to prevent click-to-dismiss behavior
+        # Do nothing when clicked
+        pass
+    
+    def setup_animations(self):
+        # Rotation animation for the loading ring
+        self.rotation_timer = QTimer()
+        self.rotation_timer.timeout.connect(self.update_rotation)
+        self.rotation_timer.start(50)  # 20 FPS
+        
+        # Pulse animation for the logo
+        self.pulse_timer = QTimer()
+        self.pulse_timer.timeout.connect(self.update_pulse)
+        self.pulse_timer.start(100)
+        
+        # Progress simulation
+        self.progress_timer = QTimer()
+        self.progress_timer.timeout.connect(self.update_progress)
+        self.progress_timer.start(100)
+    
+    def update_rotation(self):
+        self.rotation_angle = (self.rotation_angle + 5) % 360
+        self.update()
+    
+    def update_pulse(self):
+        # Create a smooth pulsing effect
+        pulse_time = time.time() * 2
+        self.pulse_scale = 1.0 + 0.1 * math.sin(pulse_time)
+        self.update()
+    
+    def update_progress(self):
+        if self.progress_value < 100:
+            self.progress_value += 1
+        else:
+            # Loading complete - could emit a signal here
+            pass
+    
+    def start_loading(self):
+        # Simulate loading tasks
+        loading_tasks = [
+            "Initializing CAS System...",
+            "Loading CAS files...",
+            "Loading assets and settings...",
+            "Preparing User Interface...",
+            "Finalizing Setup..."
+        ]
+        
+        self.current_task = 0
+        self.loading_tasks = loading_tasks
+        
+        # Task update timer
+        self.task_timer = QTimer()
+        self.task_timer.timeout.connect(self.update_task)
+        self.task_timer.start(2000)  # Change task every 2 seconds
+    
+    def update_task(self):
+        if self.current_task < len(self.loading_tasks) - 1:
+            self.current_task += 1
+        self.update()
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Fill background with dark blue/black
+        painter.fillRect(self.rect(), QColor('#0d1117'))
+        
+        # Draw subtle grid pattern
+        self.draw_grid(painter)
+        
+        # Draw main logo/title
+        self.draw_logo(painter)
+        
+        # Draw loading ring
+        self.draw_loading_ring(painter)
+        
+        # Draw progress bar
+        self.draw_progress_bar(painter)
+        
+        # Draw loading text
+        self.draw_loading_text(painter)
+        
+        # Draw creator credit
+        self.draw_creator_credit(painter)
+    
+    def draw_grid(self, painter):
+        # Futuristic circuit-like pattern
+        painter.setPen(QPen(QColor('#21262d'), 1))
+        
+        width = self.width()
+        height = self.height()
+        
+        # Draw diagonal tech lines
+        for i in range(0, width + height, 80):
+            # Diagonal lines from top-left to bottom-right
+            painter.drawLine(i - height, 0, i, height)
+            # Diagonal lines from top-right to bottom-left
+            painter.drawLine(width - i + height, 0, width - i, height)
+        
+        # Draw hexagonal pattern in corners
+        hex_size = 30
+        for corner_x, corner_y in [(0, 0), (width-hex_size*3, 0), (0, height-hex_size*3), (width-hex_size*3, height-hex_size*3)]:
+            for x in range(3):
+                for y in range(3):
+                    center_x = corner_x + x * hex_size + (hex_size//2 if y % 2 == 1 else 0)
+                    center_y = corner_y + y * hex_size * 0.8
+                    
+                    # Draw hexagon outline
+                    points = []
+                    for angle in range(0, 360, 60):
+                        px = center_x + hex_size//4 * math.cos(math.radians(angle))
+                        py = center_y + hex_size//4 * math.sin(math.radians(angle))
+                        points.append(QPoint(int(px), int(py)))
+                    
+                    polygon = QPolygon(points)
+                    painter.drawPolygon(polygon)
+        
+        # Add subtle pulsing dots
+        dot_spacing = 100
+        pulse_time = time.time() * 3
+        for x in range(dot_spacing, width, dot_spacing):
+            for y in range(dot_spacing, height, dot_spacing):
+                alpha = int(50 + 30 * math.sin(pulse_time + x * 0.01 + y * 0.01))
+                painter.setBrush(QBrush(QColor(0, 212, 170, alpha)))
+                painter.setPen(Qt.NoPen)
+                painter.drawEllipse(x-2, y-2, 4, 4)
+    
+    def draw_logo(self, painter):
+        # Main CAS logo with glow effect
+        center_x = self.width() // 2
+        center_y = self.height() // 2 - 80
+        
+        # Draw glow effect behind text
+        glow_font = QFont("Arial", 60, QFont.Bold)
+        painter.setFont(glow_font)
+        
+        # Calculate text width for centering
+        cas_text_width = painter.fontMetrics().width("CAS")
+        cas_x = center_x - cas_text_width // 2
+        
+        # Multiple glow layers
+        glow_colors = [
+            QColor(0, 212, 170, 30),  # #00d4aa with low alpha
+            QColor(0, 212, 170, 60),
+            QColor(0, 212, 170, 90)
+        ]
+        
+        for i, color in enumerate(glow_colors):
+            painter.setPen(QPen(color, 2 + i))
+            for offset in range(1, 4 - i):
+                painter.drawText(cas_x + offset, center_y + offset, "CAS")
+                painter.drawText(cas_x - offset, center_y - offset, "CAS")
+        
+        # Main text
+        painter.setPen(QPen(QColor('#00d4aa'), 3))
+        painter.drawText(cas_x, center_y, "CAS")
+        
+        # Subtitle
+        subtitle_font = QFont("Arial", 16)
+        painter.setFont(subtitle_font)
+        painter.setPen(QPen(QColor('#e6edf3'), 1))
+        
+        subtitle_text = "Cool App System (CAS)"
+        subtitle_width = painter.fontMetrics().width(subtitle_text)
+        subtitle_x = center_x - subtitle_width // 2
+        
+        painter.drawText(subtitle_x, center_y + 40, subtitle_text)
+    
+    def draw_loading_ring(self, painter):
+        # Animated loading ring
+        center_x = self.width() // 2
+        center_y = self.height() // 2 + 40
+        radius = 60
+        
+        # Outer ring (static)
+        painter.setPen(QPen(QColor('#30363d'), 4))
+        painter.drawEllipse(center_x - radius, center_y - radius, radius * 2, radius * 2)
+        
+        # Inner animated ring
+        painter.setPen(QPen(QColor('#00d4aa'), 6))
+        
+        # Create gradient for the ring
+        gradient = QLinearGradient(center_x - radius, center_y - radius, 
+                                 center_x + radius, center_y + radius)
+        gradient.setColorAt(0, QColor('#00d4aa'))
+        gradient.setColorAt(0.5, QColor('#238636'))
+        gradient.setColorAt(1, QColor('#00d4aa'))
+        
+        painter.setPen(QPen(QBrush(gradient), 6))
+        
+        # Draw arc that rotates
+        span_angle = 90 * 16  # 90 degrees in 1/16th degree units
+        painter.drawArc(center_x - radius, center_y - radius, radius * 2, radius * 2,
+                       self.rotation_angle * 16, span_angle)
+        
+        # Draw smaller inner particles
+        for i in range(4):
+            angle = (self.rotation_angle + i * 30) * math.pi / 180
+            x = int(center_x + (radius - 20) * math.cos(angle))
+            y = int(center_y + (radius - 20) * math.sin(angle))
+            
+            particle_size = int(6 + 2 * math.sin(self.rotation_angle * math.pi / 180 + i))
+            painter.setBrush(QBrush(QColor('#00d4aa')))
+            painter.setPen(QPen(QColor('#00d4aa'), 1))
+            painter.drawEllipse(x - particle_size//2, y - particle_size//2, 
+                              particle_size, particle_size)
+    
+    def draw_progress_bar(self, painter):
+        # Futuristic progress bar
+        bar_width = 400
+        bar_height = 8
+        center_x = self.width() // 2
+        y_pos = self.height() // 2 + 140
+        
+        # Background bar
+        painter.setBrush(QBrush(QColor('#21262d')))
+        painter.setPen(QPen(QColor('#30363d'), 2))
+        painter.drawRoundedRect(center_x - bar_width//2, y_pos, bar_width, bar_height, 4, 4)
+        
+        # Progress fill
+        if self.progress_value > 0:
+            progress_width = int((self.progress_value / 100) * bar_width)
+            
+            # Create gradient for progress
+            gradient = QLinearGradient(center_x - bar_width//2, y_pos,
+                                     center_x - bar_width//2 + progress_width, y_pos)
+            gradient.setColorAt(0, QColor('#238636'))
+            gradient.setColorAt(0.5, QColor('#00d4aa'))
+            gradient.setColorAt(1, QColor('#238636'))
+            
+            painter.setBrush(QBrush(gradient))
+            painter.setPen(QPen(QColor('#00d4aa'), 1))
+            painter.drawRoundedRect(center_x - bar_width//2, y_pos, 
+                                  progress_width, bar_height, 4, 4)
+        
+        # Progress percentage
+        painter.setFont(QFont("Arial", 12))
+        painter.setPen(QPen(QColor('#e6edf3'), 1))
+        painter.drawText(center_x + bar_width//2 + 20, y_pos + bar_height, 
+                        f"{self.progress_value}%")
+    
+    def draw_loading_text(self, painter):
+        # Current loading task
+        if hasattr(self, 'loading_tasks') and self.current_task < len(self.loading_tasks):
+            task_text = self.loading_tasks[self.current_task]
+            
+            painter.setFont(QFont("Arial", 14))
+            painter.setPen(QPen(QColor('#e6edf3'), 1))
+            
+            text_width = painter.fontMetrics().width(task_text)
+            center_x = self.width() // 2
+            y_pos = self.height() // 2 + 180
+            
+            painter.drawText(center_x - text_width//2, y_pos, task_text)
+    
+    def draw_creator_credit(self, painter):
+        # Creator credit at bottom
+        painter.setFont(QFont("Arial", 10))
+        painter.setPen(QPen(QColor('#7d8590'), 1))
+        
+        credit_text = "Created by Gabriel N"
+        text_width = painter.fontMetrics().width(credit_text)
+        
+        painter.drawText(self.width() - text_width - 20, self.height() - 20, credit_text)
+        
+        # Version info
+        version_text = "Version 1.2.6"
+        painter.drawText(20, self.height() - 20, version_text)
+
+
+class FuturisticButton(QPushButton):
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #238636, stop:1 #00d4aa);
+                border: 2px solid #00d4aa;
+                border-radius: 8px;
+                color: white;
+                font-weight: bold;
+                font-size: 12px;
+                padding: 8px 16px;
+                min-height: 20px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #00d4aa, stop:1 #238636);
+                border: 2px solid #238636;
+            }
+            QPushButton:pressed {
+                background: #1f2937;
+                border: 2px solid #00d4aa;
+            }
+            QPushButton:disabled {
+                background: #374151;
+                border: 2px solid #6b7280;
+                color: #9ca3af;
+            }
+        """)
+
+class FuturisticLineEdit(QLineEdit):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            QLineEdit {
+                background: #1f2937;
+                border: 2px solid #374151;
+                border-radius: 6px;
+                color: #e5e7eb;
+                font-size: 12px;
+                padding: 8px;
+                selection-background-color: #00d4aa;
+            }
+            QLineEdit:focus {
+                border: 2px solid #00d4aa;
+                background: #111827;
+            }
+        """)
+
+class FuturisticSpinBox(QSpinBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            QSpinBox {
+                background: #1f2937;
+                border: 2px solid #374151;
+                border-radius: 6px;
+                color: #e5e7eb;
+                font-size: 12px;
+                padding: 5px;
+            }
+            QSpinBox:focus {
+                border: 2px solid #00d4aa;
+                background: #111827;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                background: #374151;
+                border: 1px solid #4b5563;
+                width: 16px;
+            }
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background: #00d4aa;
+            }
+        """)
+
+class FuturisticComboBox(QComboBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            QComboBox {
+                background: #1f2937;
+                border: 2px solid #374151;
+                border-radius: 6px;
+                color: #e5e7eb;
+                font-size: 12px;
+                padding: 5px;
+                min-width: 100px;
+            }
+            QComboBox:focus {
+                border: 2px solid #00d4aa;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                border: 2px solid #00d4aa;
+                width: 8px;
+                height: 8px;
+            }
+            QComboBox QAbstractItemView {
+                background: #1f2937;
+                border: 2px solid #00d4aa;
+                selection-background-color: #00d4aa;
+                color: #e5e7eb;
+            }
+        """)
+
+class ColorButton(QPushButton):
+    colorChanged = pyqtSignal(str)
+    
+    def __init__(self, color="#FFFFFF", parent=None):
+        super().__init__(parent)
+        self.color = color
+        self.setText("Choose Color")
+        self.clicked.connect(self.choose_color)
+        self.update_style()
+    
+    def update_style(self):
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background: {self.color};
+                border: 2px solid #00d4aa;
+                border-radius: 6px;
+                color: {'black' if self.color in ['#FFFFFF', '#FFFF00', '#00FFFF'] else 'white'};
+                font-weight: bold;
+                font-size: 11px;
+                padding: 6px 12px;
+                min-height: 16px;
+            }}
+            QPushButton:hover {{
+                border: 2px solid #238636;
+            }}
+        """)
+    
+    def choose_color(self):
+        color = QColorDialog.getColor(QColor(self.color), self)
+        if color.isValid():
+            self.color = color.name()
+            self.update_style()
+            self.colorChanged.emit(self.color)
+
+
+
+class FuturisticProgressBar(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.value = 0
+        self.maximum = 100
+        self.text = ""
+        self.setMinimumHeight(40)
+        
+    def setValue(self, value):
+        self.value = max(0, min(value, self.maximum))
+        self.update()
+    
+    def setText(self, text):
+        self.text = text
+        self.update()
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Background
+        painter.fillRect(self.rect(), QColor('#1f2937'))
+        
+        # Progress bar background
+        bar_rect = QRect(20, 10, self.width() - 40, 20)
+        painter.setBrush(QBrush(QColor('#374151')))
+        painter.setPen(QPen(QColor('#4b5563'), 1))
+        painter.drawRoundedRect(bar_rect, 4, 4)
+        
+        # Progress fill
+        if self.value > 0:
+            progress_width = int((self.value / self.maximum) * bar_rect.width())
+            progress_rect = QRect(bar_rect.x(), bar_rect.y(), progress_width, bar_rect.height())
+            
+            gradient = QLinearGradient(progress_rect.topLeft(), progress_rect.topRight())
+            gradient.setColorAt(0, QColor('#238636'))
+            gradient.setColorAt(0.5, QColor('#00d4aa'))
+            gradient.setColorAt(1, QColor('#238636'))
+            
+            painter.setBrush(QBrush(gradient))
+            painter.setPen(QPen(QColor('#00d4aa'), 1))
+            painter.drawRoundedRect(progress_rect, 4, 4)
+        
+        # Text
+        if self.text:
+            painter.setPen(QPen(QColor('#e5e7eb')))
+            painter.setFont(QFont("Arial", 9))
+            painter.drawText(bar_rect, Qt.AlignCenter, self.text)
+
+class HymnExtractorWorker(QThread):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(int)
+    error = pyqtSignal(str)
+    
+    def __init__(self, pdf_path, output_dir, slide_config):
+        super().__init__()
+        self.pdf_path = pdf_path
+        self.output_dir = output_dir
+        self.slide_config = slide_config
+    
+    def run(self):
+        try:
+            self.progress.emit(0, "Starting extraction...")
+            hinos = self.extrair_hinos_harpa_crista()
+            
+            self.progress.emit(50, f"Found {len(hinos)} hymns, processing...")
+            self.salvar_hinos_json(hinos)
+            
+            # Convert JSON to .cas files
+            self.convert_json_to_cas()
+            
+            self.progress.emit(100, "Extraction and conversion completed!")
+            self.finished.emit(len(hinos))
+            
+        except Exception as e:
+            self.error.emit(str(e))
+    
+    def convert_json_to_cas(self):
+        # Create "template" folder within the output directory
+        template_folder = os.path.join(self.output_dir, "templates")
+        os.makedirs(template_folder, exist_ok=True)
+
+        # Encryption key
+        ENCRYPTION_KEY = b'hqHfYjsOe_OIhAhhgNNZxoaRGqA3pywvM1QCfbTeQg0='
+        
+        # Function to encrypt data
+        def encrypt_data(data: str) -> bytes:
+            fernet = Fernet(ENCRYPTION_KEY)
+            return fernet.encrypt(data.encode())
+
+        json_files = []  # ← Lista dos JSONs pra apagar depois
+
+        # Process each JSON file in the output directory
+        for filename in os.listdir(self.output_dir):
+            if filename.endswith(".json"):
+                try:
+                    input_path = os.path.join(self.output_dir, filename)
+                    json_files.append(input_path)  # ← Salva pra deletar depois
+
+                    # Read the original JSON
+                    with open(input_path, "r", encoding="utf-8") as f:
+                        json_data = f.read()
+
+                    # Encrypt the JSON data
+                    encrypted = encrypt_data(json_data)
+
+                    # Create the .cas filename
+                    output_filename = os.path.splitext(filename)[0] + ".cas"
+                    output_path = os.path.join(template_folder, output_filename)
+
+                    # Save the encrypted data as .cas
+                    with open(output_path, "wb") as f:
+                        f.write(encrypted)
+
+                    self.progress.emit(100, f"Converted {filename} to {output_filename}")
+
+                except Exception as e:
+                    self.error.emit(f"Error processing {filename}: {e}")
+
+        # Agora limpa todos os .json depois que terminou tudo
+        for path in json_files:
+            try:
+                os.remove(path)
+                self.progress.emit(100, f"Deleted JSON: {os.path.basename(path)}")
+            except Exception as e:
+                self.error.emit(f"Error deleting {os.path.basename(path)}: {e}")
+
+
+    
+    def extrair_hinos_harpa_crista(self):
+        hinos = []
+        texto_completo = ""
+
+        with pdfplumber.open(self.pdf_path) as pdf:
+            total_pages = len(pdf.pages)
+            for i, pagina in enumerate(pdf.pages):
+                texto_pagina = pagina.extract_text()
+                if texto_pagina:
+                    texto_completo += texto_pagina + "\n"
+                
+                progress = int((i / total_pages) * 30)  # First 30% for reading
+                self.progress.emit(progress, f"Reading page {i+1}/{total_pages}...")
+
+        self.progress.emit(30, "Processing hymns...")
+        
+        padrao_inicio_hino = r'(?m)^(\d{1,3})\.\s+([A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ0-9\s,\'\-]+)$'
+        matches = list(re.finditer(padrao_inicio_hino, texto_completo))
+
+        for i, match in enumerate(matches):
+            numero_hino = match.group(1)
+            titulo_hino = match.group(2).strip()
+
+            inicio_hino = match.end()
+            fim_hino = matches[i + 1].start() if i + 1 < len(matches) else len(texto_completo)
+            texto_hino = texto_completo[inicio_hino:fim_hino].strip()
+
+            hino_processado = self.processar_hino(numero_hino, titulo_hino, texto_hino)
+            if hino_processado:
+                hinos.append(hino_processado)
+            
+            progress = 30 + int((i / len(matches)) * 20)  # Next 20% for processing
+            self.progress.emit(progress, f"Processing hymn {numero_hino}...")
+
+        return hinos
+    
+    def processar_hino(self, numero, titulo, texto_completo):
+        titulo = re.sub(r'\s+', ' ', titulo).strip()
+        
+        padrao_cabecalho = rf'{numero}\.\s*{re.escape(titulo)}'
+        texto_limpo = re.sub(padrao_cabecalho, '', texto_completo, flags=re.IGNORECASE).strip()
+
+        texto_limpo = re.sub(r'www\.[^\s]+', '', texto_limpo)
+        texto_limpo = re.sub(r'\s+', ' ', texto_limpo).strip()
+
+        if not texto_limpo:
+            return None
+
+        slides = self.dividir_em_slides(texto_limpo)
+
+        return {
+            "numero": numero,
+            "titulo": titulo,
+            "slides": slides
+        }
+    
+    def dividir_em_slides(self, texto):
+        slides = []
+
+        texto = re.sub(r'\s+', ' ', texto).strip()
+        versos = re.split(r'\b(\d+)\s+', texto)
+
+        for i, parte in enumerate(versos):
+            if not parte.strip():
+                continue
+
+            if parte.strip().isdigit() and i < len(versos) - 1:
+                continue
+
+            if i > 0 and versos[i-1].strip().isdigit():
+                numero_verso = versos[i-1].strip()
+                texto_verso = f"{numero_verso} {parte.strip()}"
+            else:
+                texto_verso = parte.strip()
+
+            slides_verso = self.dividir_texto_em_frases(texto_verso)
+            slides.extend(slides_verso)
+
+        if len(slides) <= 1:
+            slides = self.dividir_texto_em_frases(texto)
+
+        return slides
+
+    def dividir_texto_em_frases(self, texto):
+        slides = []
+        frases = re.split(r'[.!;]\s*', texto)
+
+        for frase in frases:
+            frase = frase.strip()
+            if not frase:
+                continue
+
+            palavras = frase.split()
+
+            if len(palavras) <= 12:
+                slides.append(self.criar_slide(frase))
+
+            elif len(palavras) <= 24:
+                if ',' in frase:
+                    partes = [p.strip() for p in frase.split(',')]
+                    for parte in partes:
+                        if parte and len(parte.split()) >= 3:
+                            slides.append(self.criar_slide(parte))
+                else:
+                    meio = len(palavras) // 2
+                    primeira_parte = ' '.join(palavras[:meio])
+                    segunda_parte = ' '.join(palavras[meio:])
+                    slides.append(self.criar_slide(primeira_parte))
+                    slides.append(self.criar_slide(segunda_parte))
+
+            else:
+                i = 0
+                while i < len(palavras):
+                    fim = min(i + 10, len(palavras))
+                    pedaco = ' '.join(palavras[i:fim])
+                    slides.append(self.criar_slide(pedaco))
+                    i = fim
+
+        slides_final = []
+        buffer = ""
+
+        for frase in slides:
+            texto = frase["text"].replace("\n", " ").strip()
+            if len(texto.split()) < 5:
+                buffer += " " + texto
+            else:
+                if buffer.strip():
+                    slides_final.append(self.criar_slide(buffer.strip()))
+                    buffer = ""
+                slides_final.append(frase)
+
+        if buffer.strip():
+            slides_final.append(self.criar_slide(buffer.strip()))
+
+        return slides_final
+
+    def criar_slide(self, texto):
+        texto_formatado = self.formatar_texto_slide(texto)
+
+        slide = {
+            "text": texto_formatado,
+            "font_family": self.slide_config.get("font_family", "Arial"),
+            "font_size": self.slide_config.get("font_size", 30),
+            "font_color": self.slide_config.get("font_color", "#FFFFFF"),
+            "background_image": self.slide_config.get("background_image", ""),
+            "video_path": self.slide_config.get("video_path", ""),
+            "text_alignment": self.slide_config.get("text_alignment", 132),
+            "text_x": self.slide_config.get("text_x", 0.5),
+            "text_y": self.slide_config.get("text_y", 0.04185351270553064),
+            "typing_speed": self.slide_config.get("typing_speed", 0),
+            "URLs": self.slide_config.get("URLs", "")
+        }
+        
+        return slide
+
+    def formatar_texto_slide(self, texto):
+        palavras = texto.split()
+
+        if len(palavras) <= 8:
+            pontos_quebra = ['e', 'ou', 'mas', 'que', 'de', 'da', 'do', 'na', 'no', 'para', 'por', 'com']
+
+            for i, palavra in enumerate(palavras[2:-2], 2):
+                if palavra.lower() in pontos_quebra:
+                    primeira_linha = ' '.join(palavras[:i])
+                    segunda_linha = ' '.join(palavras[i:])
+                    return f"{primeira_linha}\n{segunda_linha}"
+
+            if len(palavras) > 4:
+                meio = len(palavras) // 2
+                return f"{' '.join(palavras[:meio])}\n{' '.join(palavras[meio:])}"
+
+        elif len(palavras) <= 16:
+            meio = len(palavras) // 2
+            return f"{' '.join(palavras[:meio])}\n{' '.join(palavras[meio:])}"
+
+        else:
+            linhas = []
+            i = 0
+            while i < len(palavras):
+                fim = min(i + 8, len(palavras))
+                linha = ' '.join(palavras[i:fim])
+                linhas.append(linha)
+                i = fim
+            return '\n'.join(linhas)
+
+        return texto
+    
+    def salvar_hinos_json(self, hinos):
+        Path(self.output_dir).mkdir(exist_ok=True)
+
+        for i, hino in enumerate(hinos):
+            nome_arquivo = f"{hino['numero']}.json"
+            caminho_arquivo = Path(self.output_dir) / nome_arquivo
+
+            json_hino = self.criar_json_hino(hino)
+
+            with open(caminho_arquivo, 'w', encoding='utf-8') as arquivo:
+                json.dump(json_hino, arquivo, ensure_ascii=False, indent=2)
+            
+            progress = 50 + int((i / len(hinos)) * 50)  # Last 50% for saving
+            self.progress.emit(progress, f"Saving hymn {hino['numero']}...")
+    
+    def criar_json_hino(self, hino):
+        nome_hino = f"{hino['numero']}. {hino['titulo']}"
+
+        return {
+            "slide_groups": [
+                {
+                    "name": nome_hino,
+                    "slides": hino['slides']
+                }
+            ],
+            "current_group": 0,
+            "current_slide": 0,
+            "version": "2.0",
+            "resolution": {
+                "width": 1366,
+                "height": 768
+            }
+        }
+
+class HymnExtractorGUI(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("CAS - Hymn Extractor Pro")
+        self.setGeometry(100, 100, 1200, 800)
+        self.setMinimumSize(1100, 700)
+        self.setWindowIcon(QIcon(resource_path("CAS.ico")))
+        
+        # Apply futuristic styling
+        self.setStyleSheet("""
+            QMainWindow {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #0f172a, stop:1 #1e293b);
+                color: #e5e7eb;
+            }
+            QLabel {
+                color: #e5e7eb;
+                font-size: 12px;
+            }
+            QGroupBox {
+                border: 2px solid #374151;
+                border-radius: 8px;
+                font-weight: bold;
+                font-size: 12px;
+                color: #00d4aa;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """)
+        
+        self.slide_config = {
+            "font_family": "Arial",
+            "font_size": 30,
+            "font_color": "#FFFFFF",
+            "background_image": "",
+            "video_path": "",
+            "text_alignment": 132,
+            "text_x": 0.5,
+            "text_y": 0.04185351270553064,
+            "typing_speed": 0,
+            "URLs": ""
+        }
+        
+        self.init_ui()
+    
+    def init_ui(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Main layout
+        main_layout = QHBoxLayout(central_widget)
+        
+        # Left panel - Controls
+        left_panel = self.create_left_panel()
+        main_layout.addWidget(left_panel, 1)
+        
+        # Right panel - Preview
+        right_panel = self.create_right_panel()
+        main_layout.addWidget(right_panel, 1)
+        
+        # Status bar
+        self.statusBar().showMessage("Ready to extract hymns")
+        self.statusBar().setStyleSheet("""
+            QStatusBar {
+                background: #1f2937;
+                color: #e5e7eb;
+                border-top: 1px solid #374151;
+            }
+        """)
+    
+    def create_left_panel(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        
+        # Title
+        title = QLabel("🎵 Hymn Extractor Pro")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("""
+            QLabel {
+                font-size: 24px;
+                font-weight: bold;
+                color: #00d4aa;
+                margin: 20px 0;
+                border: 2px solid #00d4aa;
+                border-radius: 8px;
+                padding: 10px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(0, 212, 170, 0.1), stop:1 rgba(35, 134, 54, 0.1));
+            }
+        """)
+        layout.addWidget(title)
+        
+        # File selection
+        file_group = QGroupBox("📁 Input File")
+        file_layout = QVBoxLayout(file_group)
+        
+        file_select_layout = QHBoxLayout()
+        self.file_path_edit = FuturisticLineEdit()
+        self.file_path_edit.setPlaceholderText("Select PDF file...")
+        self.browse_button = FuturisticButton("Browse")
+        self.browse_button.clicked.connect(self.browse_file)
+        
+        file_select_layout.addWidget(self.file_path_edit)
+        file_select_layout.addWidget(self.browse_button)
+        file_layout.addLayout(file_select_layout)
+        
+        # Output directory
+        output_layout = QHBoxLayout()
+        self.output_path_edit = FuturisticLineEdit()
+        self.output_path_edit.setPlaceholderText("Output directory...")
+        self.output_path_edit.setText(os.getcwd())
+        self.output_browse_button = FuturisticButton("Browse")
+        self.output_browse_button.clicked.connect(self.browse_output)
+        
+        output_layout.addWidget(self.output_path_edit)
+        output_layout.addWidget(self.output_browse_button)
+        file_layout.addLayout(output_layout)
+        
+        layout.addWidget(file_group)
+        
+        # Slide configuration
+        config_group = QGroupBox("⚙️ Slide Configuration")
+        config_layout = QFormLayout(config_group)
+        
+        # Font family
+        self.font_family_combo = FuturisticComboBox()
+        self.font_family_combo.addItems(["Arial", "Times New Roman", "Helvetica", "Calibri", "Verdana"])
+        self.font_family_combo.currentTextChanged.connect(self.update_config)
+        config_layout.addRow("Font Family:", self.font_family_combo)
+        
+        # Font size
+        self.font_size_spin = FuturisticSpinBox()
+        self.font_size_spin.setRange(8, 100)
+        self.font_size_spin.setValue(30)
+        self.font_size_spin.valueChanged.connect(self.update_config)
+        config_layout.addRow("Font Size:", self.font_size_spin)
+        
+        # Font color
+        self.font_color_button = ColorButton("#FFFFFF")
+        self.font_color_button.colorChanged.connect(self.update_config)
+        config_layout.addRow("Font Color:", self.font_color_button)
+        
+        # Background image
+        bg_layout = QHBoxLayout()
+        self.bg_image_edit = FuturisticLineEdit()
+        self.bg_image_edit.setPlaceholderText("Background image path...")
+        self.bg_browse_button = FuturisticButton("Browse")
+        self.bg_browse_button.clicked.connect(self.browse_background)
+        bg_layout.addWidget(self.bg_image_edit)
+        bg_layout.addWidget(self.bg_browse_button)
+        config_layout.addRow("Background:", bg_layout)
+        
+        # Text alignment
+        self.alignment_combo = FuturisticComboBox()
+        self.alignment_combo.addItems(["Left (129)", "Center (132)", "Right (130)"])
+        self.alignment_combo.setCurrentIndex(1)  # Center by default
+        self.alignment_combo.currentTextChanged.connect(self.update_config)
+        config_layout.addRow("Text Alignment:", self.alignment_combo)
+        
+        # Text position X
+        self.text_x_spin = QDoubleSpinBox()
+        self.text_x_spin.setRange(0.0, 1.0)
+        self.text_x_spin.setSingleStep(0.01)
+        self.text_x_spin.setValue(0.5)
+        self.text_x_spin.setDecimals(3)
+        self.text_x_spin.valueChanged.connect(self.update_config)
+        self.text_x_spin.setStyleSheet("""
+            QDoubleSpinBox {
+                background: #1f2937;
+                border: 2px solid #374151;
+                border-radius: 6px;
+                color: #e5e7eb;
+                font-size: 12px;
+                padding: 5px;
+            }
+            QDoubleSpinBox:focus {
+                border: 2px solid #00d4aa;
+            }
+        """)
+        config_layout.addRow("Text X Position:", self.text_x_spin)
+        
+        # Text position Y
+        self.text_y_spin = QDoubleSpinBox()
+        self.text_y_spin.setRange(0.0, 1.0)
+        self.text_y_spin.setSingleStep(0.01)
+        self.text_y_spin.setValue(0.042)
+        self.text_y_spin.setDecimals(3)
+        self.text_y_spin.valueChanged.connect(self.update_config)
+        self.text_y_spin.setStyleSheet(self.text_x_spin.styleSheet())
+        config_layout.addRow("Text Y Position:", self.text_y_spin)
+        
+        layout.addWidget(config_group)
+        
+        # Progress
+        self.progress_bar = FuturisticProgressBar()
+        layout.addWidget(self.progress_bar)
+        
+        # Extract button
+        self.extract_button = FuturisticButton("🚀 Extract Hymns")
+        self.extract_button.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #238636, stop:1 #00d4aa);
+                border: 2px solid #00d4aa;
+                border-radius: 12px;
+                color: white;
+                font-weight: bold;
+                font-size: 16px;
+                padding: 15px 30px;
+                min-height: 30px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #00d4aa, stop:1 #238636);
+            }
+            QPushButton:pressed {
+                background: #1f2937;
+            }
+        """)
+        self.extract_button.clicked.connect(self.start_extraction)
+        layout.addWidget(self.extract_button)
+        
+        layout.addStretch()
+        
+        return panel
+    
+    def create_right_panel(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        
+        
+        
+        # Info panel
+        info_group = QGroupBox("ℹ️ Information")
+        info_layout = QVBoxLayout(info_group)
+        
+        info_text = QLabel("""
+        <b>Instructions:</b><br>
+        1. Select your PDF file containing hymns<br>
+        2. Configure slide appearance settings<br>
+        3. Preview your settings on the right<br>
+        4. Click Extract to process all hymns<br><br>
+        
+        <b>Supported formats:</b><br>
+        • PDF files with numbered hymns<br>
+        • Output: cas files for presentation software in the folder templates<br><br>
+        
+        <b>Created by Gabriel N</b>
+        """)
+        info_text.setWordWrap(True)
+        info_text.setStyleSheet("""
+            QLabel {
+                color: #9ca3af;
+                font-size: 22px;
+                background: rgba(0, 212, 170, 0.05);
+                border: 1px solid #374151;
+                border-radius: 6px;
+                padding: 10px;
+                margin: 5px;
+            }
+        """)
+        info_layout.addWidget(info_text)
+        
+        layout.addWidget(info_group)
+        
+        # Update preview initially
+        
+        
+        return panel
+    
+    def browse_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select PDF File", "", "PDF Files (*.pdf)"
+        )
+        if file_path:
+            self.file_path_edit.setText(file_path)
+    
+    def browse_output(self):
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "Select Output Directory"
+        )
+        if dir_path:
+            self.output_path_edit.setText(dir_path)
+    
+    def browse_background(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Background Image", "", 
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.gif)"
+        )
+        if file_path:
+            self.bg_image_edit.setText(file_path)
+            self.update_config()
+    
+    def update_config(self):
+        # Update slide configuration
+        self.slide_config['font_family'] = self.font_family_combo.currentText()
+        self.slide_config['font_size'] = self.font_size_spin.value()
+        self.slide_config['font_color'] = self.font_color_button.color
+        self.slide_config['background_image'] = self.bg_image_edit.text()
+        
+        # Parse alignment
+        alignment_text = self.alignment_combo.currentText()
+        if "129" in alignment_text:
+            self.slide_config['text_alignment'] = 129
+        elif "130" in alignment_text:
+            self.slide_config['text_alignment'] = 130
+        else:
+            self.slide_config['text_alignment'] = 132
+        
+        self.slide_config['text_x'] = self.text_x_spin.value()
+        self.slide_config['text_y'] = self.text_y_spin.value()
+        
+      
+    
+    
+    def start_extraction(self):
+        pdf_path = self.file_path_edit.text().strip()
+        output_dir = self.output_path_edit.text().strip()
+        
+        if not pdf_path:
+            QMessageBox.warning(self, "Warning", "Please select a PDF file!")
+            return
+        
+        if not os.path.exists(pdf_path):
+            QMessageBox.critical(self, "Error", "PDF file does not exist!")
+            return
+        
+        if not output_dir:
+            output_dir = "hymns_output"
+            self.output_path_edit.setText(output_dir)
+        
+        # Disable extract button
+        self.extract_button.setEnabled(False)
+        self.extract_button.setText("🔄 Extracting...")
+        
+        # Start worker thread
+        self.worker = HymnExtractorWorker(pdf_path, output_dir, self.slide_config)
+        self.worker.progress.connect(self.update_progress)
+        self.worker.finished.connect(self.extraction_finished)
+        self.worker.error.connect(self.extraction_error)
+        self.worker.start()
+    
+    def update_progress(self, value, text):
+        self.progress_bar.setValue(value)
+        self.progress_bar.setText(f"{value}% - {text}")
+        self.statusBar().showMessage(text)
+    
+    def extraction_finished(self, hymn_count):
+        self.extract_button.setEnabled(True)
+        self.extract_button.setText("🚀 Extract Hymns")
+        
+        self.progress_bar.setValue(100)
+        self.progress_bar.setText("100% - Extraction completed!")
+        
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Extraction Complete")
+        msg.setText(f"Successfully extracted {hymn_count} hymns!")
+        msg.setInformativeText(f"Files saved to: {self.output_path_edit.text()}")
+        msg.setIcon(QMessageBox.Information)
+        msg.setStyleSheet("""
+            QMessageBox {
+                background: #1f2937;
+                color: #e5e7eb;
+            }
+            QMessageBox QPushButton {
+                background: #00d4aa;
+                border: 1px solid #238636;
+                border-radius: 4px;
+                color: white;
+                padding: 6px 16px;
+                font-weight: bold;
+            }
+            QMessageBox QPushButton:hover {
+                background: #238636;
+            }
+        """)
+        msg.exec_()
+        
+        self.statusBar().showMessage(f"Ready - {hymn_count} hymns extracted")
+        
+    
+    def extraction_error(self, error_msg):
+        self.extract_button.setEnabled(True)
+        self.extract_button.setText("🚀 Extract Hymns")
+        
+        self.progress_bar.setValue(0)
+        self.progress_bar.setText("Error occurred")
+        
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Extraction Error")
+        msg.setText("An error occurred during extraction:")
+        msg.setInformativeText(str(error_msg))
+        msg.setIcon(QMessageBox.Critical)
+        msg.setStyleSheet("""
+            QMessageBox {
+                background: #1f2937;
+                color: #e5e7eb;
+            }
+            QMessageBox QPushButton {
+                background: #dc2626;
+                border: 1px solid #991b1b;
+                border-radius: 4px;
+                color: white;
+                padding: 6px 16px;
+                font-weight: bold;
+            }
+            QMessageBox QPushButton:hover {
+                background: #991b1b;
+            }
+        """)
+        msg.exec_()
+        
+        self.statusBar().showMessage("Ready - Error occurred")
+        
+
+                    
+def load_last_modified_file():
+    # Define the path to the templates folder
+    templates_folder = os.path.join(os.getcwd(), 'templates')
+
+    # Check if the templates folder exists, if not, create it
+    if not os.path.exists(templates_folder):
+        os.makedirs(templates_folder)
+
+    # Get the list of all .cas files in the templates folder
+    files = glob.glob(os.path.join(templates_folder, '*.cas'))
+
+    # If there are no files, return None
+    if not files:
+        return None
+
+    # Get the last modified file
+    last_modified_file = max(files, key=os.path.getmtime)
+    return last_modified_file
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setApplicationName("Cool App System (CAS)")
+    app.setApplicationVersion("1.2.6")
+    app.setOrganizationName("Tech Solutions By Gabriel N")
+    app.setStyle('Fusion')
+
+    # 1️⃣ Create the loading screen
+    loading = FuturisticLoadingScreen()
+    loading.show()
+
+    # 2️⃣ Create the main window but keep it hidden
+    editor = EditorWindow()
+    editor.hide()
+
+    # 4️⃣ After loading, close the loading screen and show the app
+    def start_main_app():
+        loading.close()
+        editor.show()
+
+            # 3️⃣ Load the last modified project file
+        last_file = load_last_modified_file()
+        if last_file:
+            editor.load_from_file_silently(last_file)  # Load the last modified file
+
+    QTimer.singleShot(7000, start_main_app)  # 7 seconds of loading
+    sys.exit(app.exec_())
+
+    # Carrega spaCy e dispositivo
+
+if __name__ == '__main__':
+    main()
